@@ -1,0 +1,120 @@
+{
+  "_comment": "Feluda rule configuration. All detection signals are heuristics: an 'unusual' port or a flag from this file is a SIGNAL, never proof of malice. Tune weights/thresholds here without touching code.",
+
+  "well_known_ports": {
+    "20": "FTP (data)",
+    "21": "FTP (control)",
+    "22": "SSH",
+    "23": "Telnet",
+    "25": "SMTP",
+    "53": "DNS",
+    "67": "DHCP",
+    "68": "DHCP",
+    "69": "TFTP",
+    "80": "HTTP",
+    "110": "POP3",
+    "123": "NTP",
+    "135": "MS RPC",
+    "137": "NetBIOS",
+    "138": "NetBIOS",
+    "139": "NetBIOS (SMB)",
+    "143": "IMAP",
+    "161": "SNMP",
+    "389": "LDAP",
+    "443": "HTTPS",
+    "445": "SMB",
+    "465": "SMTPS",
+    "514": "Syslog",
+    "587": "SMTP (submission)",
+    "636": "LDAPS",
+    "993": "IMAPS",
+    "995": "POP3S",
+    "1433": "MS SQL Server",
+    "1521": "Oracle DB",
+    "3306": "MySQL",
+    "3389": "RDP",
+    "5432": "PostgreSQL",
+    "5900": "VNC",
+    "5985": "WinRM (HTTP)",
+    "5986": "WinRM (HTTPS)",
+    "6379": "Redis",
+    "8080": "HTTP Proxy",
+    "8443": "HTTPS Alt",
+    "27017": "MongoDB"
+  },
+
+  "unusual_remote_ports": [4444, 5555, 6666, 6667, 1337, 31337, 12345, 9001],
+
+  "suspicious_location_substrings": [
+    "\\appdata\\local\\temp\\",
+    "\\appdata\\roaming\\temp\\",
+    "\\downloads\\",
+    "\\users\\public\\",
+    "\\temp\\"
+  ],
+
+  "normal_location_substrings": [
+    "\\program files\\",
+    "\\program files (x86)\\",
+    "\\windows\\system32\\",
+    "\\windows\\syswow64\\",
+    "\\windows\\"
+  ],
+
+  "system_process_names": [
+    "system",
+    "system idle process",
+    "registry",
+    "smss.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "services.exe",
+    "lsass.exe",
+    "lsm.exe",
+    "svchost.exe",
+    "spoolsv.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "sihost.exe",
+    "taskhostw.exe",
+    "ctfmon.exe",
+    "fontdrvhost.exe",
+    "dllhost.exe",
+    "conhost.exe",
+    "searchindexer.exe",
+    "securityhealthservice.exe",
+    "msmpeng.exe"
+  ],
+
+  "rule_weights": {
+    "external_unknown_process": 30,
+    "unusual_remote_port": 20,
+    "suspicious_location": 25,
+    "multiple_external_connections": 10,
+    "repeated_connection": 10,
+    "outside_baseline": 15
+  },
+
+  "thresholds": {
+    "multiple_external_connections_min": 3,
+    "repeated_connection_min_scans": 3,
+    "hash_min_risk_score": 25,
+    "alert_min_risk_score": 25
+  },
+
+  "risk_bands": {
+    "LOW": [0, 24],
+    "MEDIUM": [25, 49],
+    "HIGH": [50, 74],
+    "CRITICAL": [75, 100]
+  },
+
+  "monitor": {
+    "poll_interval_seconds": 5
+  },
+
+  "export": {
+    "directory": "exports"
+  }
+}
