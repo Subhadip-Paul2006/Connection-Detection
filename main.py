@@ -23,10 +23,11 @@ from rich.table import Table
 
 from utils import logger
 from utils.config_loader import settings
-from utils.formatting import render_connections_table
+from utils.formatting import print_banner, render_connections_table
 
 console = Console()
 log = logger.get_logger("main")
+
 
 
 def _summary_line(records):
@@ -149,6 +150,7 @@ def build_parser():
         prog="feluda",
         description="Defensive network connection monitor. Flags are signals, not verdicts.",
     )
+    p.add_argument("--no-banner", action="store_true", help="Suppress startup ASCII banner")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("scan", help="Run a single scan and print a table")
@@ -181,6 +183,8 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    if not args.no_banner:
+        print_banner(console)
     try:
         return args.func(args)
     except KeyboardInterrupt:
@@ -191,3 +195,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

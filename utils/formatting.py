@@ -68,6 +68,37 @@ def build_connection_payload(record):
 # rich rendering
 # ---------------------------------------------------------------------------
 
+def print_banner(console=None):
+    """Render the retro NETSIGHT-inspired block banner for FELUDA."""
+    import sys
+    from rich.console import Console
+
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+    if console is None:
+        console = Console()
+
+    banner_art = (
+        "[bold #ff9900]"
+        " ╔════════╗  ╔════════╗  ╔═══╗       ╔═══╗    ╔═══╗  ╔═════════╗   ╔════════╗ \n"
+        " ║ ██████ ║  ║ ██████ ║  ║ █ ║       ║ █ ║    ║ █ ║  ║ ███████ ╚╗  ║ ██████ ║ \n"
+        " ║ █ ╔════╝  ║ █ ╔════╝  ║ █ ║       ║ █ ║    ║ █ ║  ║ █ ╔═══╗ █ ║ ║ █ ╔══╗ █ ║ \n"
+        " ║ ████ ║    ║ ████ ║    ║ █ ║       ║ █ ║    ║ █ ║  ║ █ ║   ║ █ ║ ║ ██████ ║ \n"
+        " ║ █ ╔══╝    ║ █ ╔══╝    ║ █ ╚════╗  ║ █ ╚════╝ █ ║  ║ █ ║   ║ █ ║ ║ █ ╔══╗ █ ║ \n"
+        " ║ █ ║       ║ ██████ ║  ║ ██████ ║  ║ ██████████ ║  ║ ███████ ╔╝  ║ █ ║  ║ █ ║ \n"
+        " ╚═══╝       ╚════════╝  ╚════════╝  ╚════════════╝  ╚═════════╝   ╚═══╝  ╚═══╝[/bold #ff9900]\n"
+        "[bold #d97706]"
+        "  ║   │       ║       │   ║       │   ║            │    ║         │   ║      │  \n"
+        "  ╚═══╛       ╚═══════╛   ╚═══════╛   ╚════════════╛    ╚═════════╛   ╚══════╛  [/bold #d97706]\n"
+        "[bold #ffb347] ─── DEFENSIVE NETWORK CONNECTION MONITOR & TRIAGE ENGINE ───[/bold #ffb347]\n"
+    )
+    console.print(banner_art)
+
+
 def render_connections_table(records, title="Network Connections", show_all=False):
     """Build a rich Table. `records` are analyzed dicts (from analyzer.rules)."""
     from rich.table import Table
