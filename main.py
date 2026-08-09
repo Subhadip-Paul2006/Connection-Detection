@@ -184,7 +184,8 @@ def main():
     try:
         return args.func(args)
     except KeyboardInterrupt:
-        console.print("\\n[bold]Interrupted.[/bold]")
+        console.line()
+        console.print("[bold]Interrupted.[/bold]")
         return 130
 
 

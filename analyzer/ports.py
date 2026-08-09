@@ -18,7 +18,10 @@ def service_name(port):
     """Return the well-known service label for a port, or None."""
     if port is None:
         return None
-    return settings().get("well_known_ports", {}).get(str(int(port)))
+    try:
+        return settings().get("well_known_ports", {}).get(str(int(port)))
+    except (TypeError, ValueError):
+        return None
 
 
 def is_unusual_remote_port(port):

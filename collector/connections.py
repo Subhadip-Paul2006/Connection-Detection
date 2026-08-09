@@ -89,16 +89,16 @@ class ConnectionStore:
         return (rec.get("pid"), rec.get("local_port"), rec.get("remote_ip"), rec.get("remote_port"))
 
     def observe_scan(self, records):
-        """Record one completed scan; returns list of (key, count) for repeats."""
-        self._last_scan = set()
+        """Record one completed scan; returns per-key count of scans seen.
+
+        A key is counted ONE per scan regardless of how many duplicate
+        records carry it in that scan (dual-stack TCP+UDP or duplicate psutil
+        rows must not advance the repeat counter faster than real time)."""
+        keys = {self.key(rec) for rec in records}
+        self._last_scan = keys
         counts = Counter()
-        for rec in records:
-            k = self.key(rec)
-            self._last_scan.add(k)
-            if k in self._seen:
-                self._seen[k] += 1
-            else:
-                self._seen[k] = 1
+        for k in keys:
+            self._seen[k] = self._seen.get(k, 0) + 1
             counts[k] = self._seen[k]
         return counts
 

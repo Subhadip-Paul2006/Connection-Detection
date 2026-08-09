@@ -5,6 +5,7 @@
 - baseline: learned normal process->remote_port patterns (`name:port`).
 """
 
+import contextlib
 import sqlite3
 from pathlib import Path
 
@@ -53,7 +54,9 @@ def _connect(db_path=None):
 
 
 def baseline_key(process_name, remote_port):
-    return f"{(process_name or '').lower()}:{remote_port}"
+    # Mirror the learn-path normalization (`proc.get("name") or "unknown"`) so
+    # learn-time and match-time keys agree even for empty/None process names.
+    return f"{(process_name or 'unknown').lower()}:{remote_port}"
 
 
 def save_scan(records, db_path=None):
@@ -68,9 +71,12 @@ def save_scan(records, db_path=None):
             p["local_ip"], p["local_port"], p["remote_ip"], p["remote_port"],
             p["status"], p["risk_score"], p["risk_level"], "; ".join(p["reasons"]),
         ))
+    inserted = 0
     try:
-        with _connect(db_path) as conn:
-            conn.executemany(
+        # contextlib.closing guarantees close(); a bare `with` on sqlite3 only
+        # commits — it never closes the connection, leaking one per call.
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            cur = conn.executemany(
                 """INSERT INTO history
                    (timestamp, pid, process_name, exe_path, sha256,
                     local_ip, local_port, remote_ip, remote_port,
@@ -78,10 +84,11 @@ def save_scan(records, db_path=None):
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
-        log.info("persisted %d history rows", len(rows))
+            inserted = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else len(rows)
+        log.info("persisted %d history rows", inserted)
     except sqlite3.Error as exc:
         log.error("save_scan failed: %s", exc)
-    return len(rows)
+    return inserted
 
 
 def fetch_history(limit=200, level=None, db_path=None):
@@ -94,7 +101,7 @@ def fetch_history(limit=200, level=None, db_path=None):
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(int(limit))
     try:
-        with _connect(db_path) as conn:
+        with contextlib.closing(_connect(db_path)) as conn:
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
     except sqlite3.Error as exc:
         log.error("fetch_history failed: %s", exc)
@@ -103,7 +110,7 @@ def fetch_history(limit=200, level=None, db_path=None):
 
 def distinct_history_count(db_path=None):
     try:
-        with _connect(db_path) as conn:
+        with contextlib.closing(_connect(db_path)) as conn:
             return conn.execute("SELECT COUNT(*) AS c FROM history").fetchone()["c"]
     except sqlite3.Error:
         return 0
@@ -131,7 +138,7 @@ def create_baseline(records, db_path=None):
         key = baseline_key(name, rport)
         entries[key] = (key, name, rport, now)
     try:
-        with _connect(db_path) as conn:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
             for row in entries.values():
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO baseline (key, process_name, remote_port, created_at) VALUES (?,?,?,?)",
@@ -148,7 +155,7 @@ def create_baseline(records, db_path=None):
 def load_baseline(db_path=None):
     """Return a set of baseline keys like 'chrome.exe:443'."""
     try:
-        with _connect(db_path) as conn:
+        with contextlib.closing(_connect(db_path)) as conn:
             return {row["key"] for row in conn.execute("SELECT key FROM baseline")}
     except sqlite3.Error as exc:
         log.error("load_baseline failed: %s", exc)
@@ -157,7 +164,7 @@ def load_baseline(db_path=None):
 
 def clear_baseline(db_path=None):
     try:
-        with _connect(db_path) as conn:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
             conn.execute("DELETE FROM baseline")
     except sqlite3.Error as exc:
         log.error("clear_baseline failed: %s", exc)

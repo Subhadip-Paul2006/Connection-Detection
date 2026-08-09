@@ -27,12 +27,8 @@ def run_scan(use_baseline=True, repeat_keys=None, hash_processes=True):
 
     store.observe_scan(records)
     if repeat_keys is None:
-        min_scans = 3
-        try:
-            from utils.config_loader import settings
-            min_scans = settings().get("thresholds", {}).get("repeated_connection_min_scans", 3)
-        except Exception:
-            pass
+        from utils.config_loader import settings
+        min_scans = settings().get("thresholds", {}).get("repeated_connection_min_scans", 3)
         repeat_keys = store.repeat_keys(min_scans)
 
     baseline = database.load_baseline() if use_baseline else None

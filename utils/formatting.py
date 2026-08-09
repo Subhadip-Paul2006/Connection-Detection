@@ -71,6 +71,7 @@ def build_connection_payload(record):
 def render_connections_table(records, title="Network Connections", show_all=False):
     """Build a rich Table. `records` are analyzed dicts (from analyzer.rules)."""
     from rich.table import Table
+    from rich.text import Text
 
     table = Table(title=title, expand=True)
     table.add_column("PID", justify="right", no_wrap=True)
@@ -91,21 +92,22 @@ def render_connections_table(records, title="Network Connections", show_all=Fals
         color = risk_color(level)
         row = [
             str(rec.get("pid") if rec.get("pid") is not None else "?"),
-            proc.get("name") or "unknown",
-            fmt_addr(rec.get("local_ip"), rec.get("local_port")),
-            fmt_addr(rec.get("remote_ip"), rec.get("remote_port")),
-            rec.get("status") or "",
+            Text(str(proc.get("name") or "unknown")),
+            Text(fmt_addr(rec.get("local_ip"), rec.get("local_port"))),
+            Text(fmt_addr(rec.get("remote_ip"), rec.get("remote_port"))),
+            Text(rec.get("status") or ""),
             f"[{color}]{score}[/{color}]",
             f"[{color}]{level}[/{color}]",
         ]
         if show_all:
-            row.append("; ".join(reasons))
+            row.append(Text("; ".join(reasons)))
         table.add_row(*row)
     return table
 
 
 def render_alert_panel(rec):
     """Build a rich Panel for one suspicious connection."""
+    from rich.markup import escape as _esc
     from rich.panel import Panel
     from rich.text import Text
 
@@ -114,15 +116,17 @@ def render_alert_panel(rec):
     level = rec.get("risk_level", "LOW")
     color = risk_color(level)
 
+    # Escape every interpolated, process-controlled value (paths, names,
+    # reason strings) — brackets in them must render literally, never as tags.
     lines = [
-        f"[bold]Process:[/bold] {proc.get('name', 'unknown')} (PID {rec.get('pid', '?')})",
-        f"[bold]Path:[/bold]    {proc.get('exe') or 'unknown'}",
-        f"[bold]Remote:[/bold]  {fmt_addr(rec.get('remote_ip'), rec.get('remote_port'))}",
-        f"[bold]Status:[/bold]  {rec.get('status', '')}   [bold]Score:[/bold] [{color}]{score} ({level})[/{color}]",
+        f"[bold]Process:[/bold] {_esc(proc.get('name', 'unknown'))} (PID {_esc(str(rec.get('pid', '?')))})",
+        f"[bold]Path:[/bold]    {_esc(proc.get('exe') or 'unknown')}",
+        f"[bold]Remote:[/bold]  {_esc(fmt_addr(rec.get('remote_ip'), rec.get('remote_port')))}",
+        f"[bold]Status:[/bold]  {_esc(rec.get('status', ''))}   [bold]Score:[/bold] [{color}]{score} ({level})[/{color}]",
         "[bold]Signals:[/bold]",
     ]
     reasons = rec.get("reasons") or ["(no reasons recorded)"]
-    lines += [f"  • {r}" for r in reasons]
+    lines += [f"  • {_esc(r)}" for r in reasons]
     body = Text.from_markup("\n".join(lines))
     return Panel(
         body,
@@ -146,7 +150,9 @@ def render_html_report(records, summary=None, title="Feluda Audit Report"):
         p = build_connection_payload(rec)
         lvl = p["risk_level"]
         lvl_cls = _LEVEL_CLASS.get(lvl, "low")
-        cells = [
+        # Data cells are HTML-escaped; the badge span and reason list carry
+        # intentional markup, so escape their *content* then build markup raw.
+        plain = [
             p["timestamp"],
             p["pid"],
             p["process_name"],
@@ -156,11 +162,14 @@ def render_html_report(records, summary=None, title="Feluda Audit Report"):
             p["status"],
             p["ip_class"],
             p["risk_score"],
-            f'<span class="badge {lvl_cls}">{lvl}</span>',
-            "<br>".join(f"• {r}" for r in p["reasons"]),
-            p["sha256"],
         ]
-        tds = "".join(f"<td>{html.escape(safe_text(c))}</td>" for c in cells)
+        tds = "".join(f"<td>{html.escape(safe_text(c))}</td>" for c in plain)
+        tds += f'<td><span class="badge {lvl_cls}">{html.escape(safe_text(lvl))}</span></td>'
+        reasons_html = "<br>".join(
+            f"• {html.escape(safe_text(r))}" for r in p["reasons"]
+        )
+        tds += f"<td>{reasons_html}</td>"
+        tds += f"<td>{html.escape(safe_text(p['sha256']))}</td>"
         rows.append(f"<tr>{tds}</tr>")
 
     headers = "".join(
@@ -180,7 +189,7 @@ def render_html_report(records, summary=None, title="Feluda Audit Report"):
         summary_html = f"<h2>Summary</h2><ul class='summary'>{items}</ul>"
 
     body_rows = "\n".join(rows) if rows else (
-        f"<tr><td colspan='12'><em>No records.</em></td></tr>"
+        "<tr><td colspan='12'><em>No records.</em></td></tr>"
     )
 
     return f"""<!DOCTYPE html>

@@ -61,9 +61,11 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True):
     min_ext = thresholds.get("multiple_external_connections_min", 3)
 
     for rec in records:
-        rec.setdefault("rules_applied", {})
-        rec.setdefault("reasons", [])
-        rec.setdefault("baseline_hit", False)
+        # Reset (not setdefault) so re-analyzing the same record list is
+        # idempotent and never double-counts weights or reasons.
+        rec["rules_applied"] = {}
+        rec["reasons"] = []
+        rec["baseline_hit"] = False
 
         pid = rec.get("pid")
         proc = rec.get("proc_info") or {}
@@ -113,7 +115,11 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True):
 
         # 6. Outside learned baseline (only when a baseline is active)
         if baseline is not None:
-            bkey = f"{(proc.get('name') or '').lower()}:{rec.get('remote_port')}"
+            # Build the key via the canonical helper so learn and match agree
+            # even when a process name is empty/missing (else they diverge and
+            # baseline_hit is permanently False -> always flagged).
+            from database import database as _db
+            bkey = _db.baseline_key(proc.get("name"), rec.get("remote_port"))
             rec["baseline_hit"] = bkey in baseline
             if is_ext and not rec["baseline_hit"]:
                 _add(

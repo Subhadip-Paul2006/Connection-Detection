@@ -38,7 +38,8 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
     min_repeat = cfg.get("thresholds", {}).get("repeated_connection_min_scans", 3)
 
     store = conn_collector.ConnectionStore()
-    previous = set()
+    previous = set()           # connection keys seen last scan
+    prev_below = {}            # key -> bool, was this key below alert_min last scan?
     scan_num = 0
 
     console.print(
@@ -65,7 +66,15 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
             database.save_scan(records)
 
             new_records = [r for r in records if _key(r) not in previous]
-            changed = [r for r in new_records if r.get("risk_score", 0) >= alert_min]
+            # Alert on (a) brand-new keys, and (b) existing keys whose score
+            # has just CROSSED the alert threshold since the previous scan —
+            # otherwise `repeated_connection` (+10) pushing a key from 20 to
+            # 30 would never surface.
+            hits = [
+                r for r in records
+                if r.get("risk_score", 0) >= alert_min
+                and (_key(r) not in previous or prev_below.get(_key(r)))
+            ]
 
             console.print(
                 f"\\[scan {scan_num}] {len(records)} connections, "
@@ -74,20 +83,23 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
                 f"at/above alert threshold"
             )
 
-            for rec in changed:
-                # Only raise interactive alerts for active sessions, not listeners.
-                if rec.get("status") not in ALERT_STATUSES:
-                    continue
+            for rec in hits:
+                # High-scoring new LISTENers are logged even though they aren't
+                # popups — otherwise a fresh listener (a classic backdoor
+                # indicator) would vanish silently from interactive monitoring.
                 logger.log_detection(rec)
-                console.print(render_alert_panel(rec))
+                if rec.get("status") in ALERT_STATUSES:
+                    console.print(render_alert_panel(rec))
 
             if show_table and once:
                 console.print(render_connections_table(records[:50], title=f"Scan {scan_num} snapshot"))
 
+            prev_below = {_key(r): r.get("risk_score", 0) < alert_min for r in records}
             previous = current
             if once:
                 break
             time.sleep(max(1, int(interval)))
     except KeyboardInterrupt:
-        console.print("\\n[bold]Monitor stopped by user.[/bold]")
+        console.line()
+        console.print("[bold]Monitor stopped by user.[/bold]")
     log.info("monitor exited after %d scans", scan_num)
