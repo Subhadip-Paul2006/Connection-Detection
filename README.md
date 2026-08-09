@@ -1,5 +1,7 @@
 # Feluda
 
+![Feluda Banner](assets/image.png)
+
 A Python-based **defensive security monitoring & triage** tool for Windows.
 
 Feluda watches your machine's active network connections, maps each one to its
@@ -10,7 +12,18 @@ suspicious* activity with a transparent, explainable **risk score**.
 > *signal* with an explicit reason list — never a definitive threat
 > determination.
 
+## Table of Contents
+
+- [Features](#features)
+- [Install](#install)
+- [Usage](#usage)
+- [Risk Bands](#risk-bands-heuristic-not-a-malware-probability)
+- [Project Layout](#project-layout)
+- [Verification Against Native Tools](#verification-against-native-tools)
+- [Design Principles](#design-principles)
+
 ## Features
+
 
 - Real-time connection monitoring (TCP/UDP) via `psutil.net_connections()`
 - PID → process mapping (name, exe path, user, create time)
