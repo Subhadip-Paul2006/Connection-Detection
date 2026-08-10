@@ -116,5 +116,45 @@
 
   "export": {
     "directory": "exports"
+  },
+
+  "browser": {
+    "_comment": "Browser & URL threat detection. known_browsers maps process-name -> (display name, engine, profile root under LOCALAPPDATA). All URL scoring signals are heuristics, never proof of malice.",
+    "poll_interval_seconds": 10,
+    "alert_min_risk_score": 60,
+    "known_browsers": {
+      "_comment": "name -> [display, engine, [candidate roots under %LOCALAPPDATA%]]. Each candidate is tried in order; first one containing a profile wins. Handles both classic (BraveSoftware\\...) and Store/UWP-packaged installs (Packages\\<family>\\LocalCache\\Local\\...).",
+      "chrome.exe": ["Chrome", "chromium", ["Google\\Chrome\\User Data"]],
+      "brave.exe":  ["Brave",  "chromium", ["BraveSoftware\\Brave-Browser\\User Data"]],
+      "msedge.exe": ["Edge",   "chromium", ["Microsoft\\Edge\\User Data", "Packages\\Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe\\LocalCache\\Local\\Microsoft\\Edge\\User Data"]],
+      "msedgewebview2.exe": ["WebView2", "chromium", ["Microsoft\\EdgeWebView\\User Data"]],
+      "arc.exe":    ["Arc",    "chromium", ["Arc\\User Data", "Packages\\TheBrowserCompany.Arc_ttt1ap7aakyb4\\LocalCache\\Local\\Arc\\User Data"]],
+      "firefox.exe":["Firefox","gecko",   [null]]
+    },
+    "max_history_rows_per_profile": 500
+  },
+
+  "url_risk": {
+    "_comment": "Structural URL heuristics. Each rule returns (triggered, points, reason). Points are additive and capped at 100. Mixed-script uses real Unicode confusable classes; typosquat edit distance <= 2 against well-known brands is a common phishing pattern.",
+    "suspicious_tlds": ["tk", "ml", "ga", "cf", "gq", "xyz", "top", "club", "work", "zip", "mov", "cam"],
+    "typosquat_targets": [
+      "google", "facebook", "youtube", "amazon", "microsoft", "apple",
+      "netflix", "paypal", "instagram", "whatsapp", "linkedin", "github",
+      "outlook", "office", "onedrive", "dropbox", "coinbase", "binance"
+    ],
+    "typosquat_shortener_allowlist": [
+      "youtu.be", "t.co", "goo.gl", "bit.ly", "tinyurl.com", "buff.ly",
+      "amzn.to", "fb.me", "lnkd.in", "ow.ly", "is.gd", "reut.rs"
+    ],
+    "length_outlier_threshold": 100,
+    "percent_encoding_threshold": 6,
+    "weights": {
+      "homograph_idn": 35,
+      "excessive_percent_encoding": 15,
+      "ip_literal": 25,
+      "suspicious_tld": 20,
+      "typosquat": 30,
+      "url_length_outlier": 10
+    }
   }
 }
