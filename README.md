@@ -35,6 +35,7 @@ suspicious* activity with a transparent, explainable **risk score**.
 - Baseline learning (`process → port` patterns)
 - Export to CSV / JSON / self-contained HTML audit report
 - SHA-256 hashing of notable executables (hash-and-store only; no execution)
+- **Browser & URL threat detection** — detects running browsers (Chrome, Brave, Edge, Arc, Firefox), extracts open/recent URLs, and scores each URL for phishing/obfuscation risk with a dedicated panel and export section
 - **Local-only scope** — inspects only this machine; never scans/probes remote hosts
 
 ## Install
@@ -55,6 +56,10 @@ python main.py baseline             # learn current process->remote-port pattern
 python main.py history --limit 50   # view recent history from SQLite
 python main.py history --level HIGH # filter by risk band
 python main.py export --format all  # writes exports/connections.{csv,json} + audit_report.html
+
+# Browser & URL threat detection (Phase 1 — offline heuristics)
+python main.py browsers                     # one-pass scan -> Rich Browser Activity panel
+python main.py browsers --live --interval 3 # live polling of newly opened browsers/URLs
 ```
 
 For clean output in Windows PowerShell, set UTF-8 first:
