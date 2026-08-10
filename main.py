@@ -23,7 +23,7 @@ from rich.table import Table
 
 from utils import logger
 from utils.config_loader import settings
-from utils.formatting import print_banner, render_connections_table
+from utils.formatting import print_banner, render_connections_table, render_browser_activity_panel
 
 console = Console()
 log = logger.get_logger("main")
@@ -118,11 +118,82 @@ def cmd_history(args):
     return 0
 
 
+def cmd_browsers(args):
+    """Phase 1 Browser & URL Threat Detection: detect running browsers,
+    extract recent open/recent URLs, score each structurally, persist, and
+    render the Browser Activity panel (with optional live polling)."""
+    from browser import browser_db
+    from browser import browser_detector, url_risk_engine
+
+    alert_min = settings().get("browser", {}).get("alert_min_risk_score", 60)
+    poll_interval = settings().get("browser", {}).get("poll_interval_seconds", 10)
+
+    def sweep_once():
+        browsers = browser_detector.detect_running_browsers()
+        if not browsers:
+            console.print("[yellow]No supported browsers currently running.[/yellow]")
+            return []
+        records = browser_detector.extract_all_tabs(browsers)
+        url_risk_engine.score_records(records)
+        for rec in records:
+            # persist each scored url (first_seen/last_seen bookkeeping)
+            browser_db.upsert_browser_url({
+                "browser_name": rec.get("browser_name"),
+                "pid": rec.get("pid"),
+                "url": rec.get("tab_url", ""),
+                "title": rec.get("tab_title", ""),
+                "is_live_tab": bool(rec.get("is_live_tab")),
+                "risk_score": rec.get("risk_score", 0),
+                "signals": rec.get("signals", []),
+            })
+        records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
+        return records
+
+    if args.live:
+        interval = args.interval or poll_interval
+        console.print(
+            f"[bold cyan]Feluda browser watch[/bold cyan] — polling every {interval}s. Ctrl+C to stop."
+        )
+        seen = set()
+        try:
+            while True:
+                records = sweep_once()
+                current = {(r.get("browser_name"), r.get("tab_url")) for r in records}
+                hits = [r for r in records
+                        if (r.get("browser_name"), r.get("tab_url")) not in seen
+                        and r.get("risk_score", 0) >= alert_min]
+                console.print(
+                    f"\\[browser sweep] {len(records)} URLs from "
+                    f"{len({r.get('browser_name') for r in records})} browsers, "
+                    f"[yellow]{sum(1 for r in records if r.get('risk_score', 0) >= alert_min)}[/yellow] "
+                    f"at/above alert threshold"
+                )
+                for rec in hits:
+                    logger.get_logger("browser.alert").info(
+                        "url-detection browser=%s pid=%s url=%s score=%s signals=%s",
+                        rec.get("browser_name"), rec.get("pid"), rec.get("tab_url"),
+                        rec.get("risk_score"), "; ".join(rec.get("signals", [])),
+                    )
+                seen = current
+                console.print(render_browser_activity_panel(records[:50]))
+                import time
+                time.sleep(max(1, int(interval)))
+        except KeyboardInterrupt:
+            console.line()
+            console.print("[bold]Browser watch stopped by user.[/bold]")
+    else:
+        records = sweep_once()
+        console.print(render_browser_activity_panel(records[:80]))
+
+    return 0
+
+
 def cmd_export(args):
     from monitor.pipeline import run_scan
     from reports.csv_export import export_csv
     from reports.json_export import export_json
     from reports.html_export import export_html
+    from browser import browser_db, browser_detector, url_risk_engine
 
     outdir = Path(settings().get("export", {}).get("directory", "exports"))
     console.print(f"[bold cyan]Running scan for export -> {outdir}/[/bold cyan]")
@@ -133,13 +204,23 @@ def cmd_export(args):
         "MEDIUM+": sum(1 for r in records if r.get("risk_score", 0) >= 25),
     }
 
+    browser_records = []
+    if args.scan_browsers:
+        console.print("[bold cyan]Also exporting browser URL risk data ...[/bold cyan]")
+        bs = browser_detector.detect_running_browsers()
+        browser_records = browser_detector.extract_all_tabs(bs)
+        url_risk_engine.score_records(browser_records)
+        summary["browser urls"] = len(browser_records)
+        summary["browser MED+"] = sum(1 for r in browser_records if r.get("risk_score", 0) >= 30)
+
     written = []
     if args.format in ("csv", "all"):
-        written.append(export_csv(records, outdir / "connections.csv"))
+        written.append(export_csv(records, outdir / "connections.csv", browser_records=browser_records))
     if args.format in ("json", "all"):
-        written.append(export_json(records, outdir / "connections.json"))
+        written.append(export_json(records, outdir / "connections.json", browser_records=browser_records))
     if args.format in ("html", "all"):
-        written.append(export_html(records, outdir / "audit_report.html", summary=summary))
+        written.append(export_html(records, outdir / "audit_report.html", summary=summary,
+                                   browser_url_rows=browser_records))
     for p in written:
         console.print(f"  [green]wrote[/green] {p}")
     return 0
@@ -175,7 +256,13 @@ def build_parser():
     e = sub.add_parser("export", help="Export current scan to CSV/JSON/HTML")
     e.add_argument("--format", choices=["csv", "json", "html", "all"], default="all")
     e.add_argument("--no-baseline", action="store_true")
+    e.add_argument("--scan-browsers", action="store_true", help="also include Browser URL risk section")
     e.set_defaults(func=cmd_export)
+
+    br = sub.add_parser("browsers", help="Browser & URL threat detection (Phase 1)")
+    br.add_argument("--live", action="store_true", help="poll for newly opened browsers/URLs")
+    br.add_argument("--interval", type=int, default=None, help="poll seconds for --live (default from config)")
+    br.set_defaults(func=cmd_browsers)
 
     return p
 

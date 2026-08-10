@@ -174,7 +174,82 @@ def render_alert_panel(rec):
 _LEVEL_CLASS = {"LOW": "low", "MEDIUM": "medium", "HIGH": "high", "CRITICAL": "critical"}
 
 
-def render_html_report(records, summary=None, title="Feluda Audit Report"):
+# ---------------------------------------------------------------------------
+# Browser URL panel (Browser & URL Threat Detection module)
+# ---------------------------------------------------------------------------
+
+def render_browser_activity_panel(records, title="Browser Activity"):
+    """Render the Browser Activity panel: one rich Table, rows pre-scored up
+    to color thresholds (green <30, yellow 30-60, red >60) per spec §5.
+
+    `records` are output of browser.url_risk_engine.score_records().
+    """
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(title=title, expand=True)
+    table.add_column("Browser", no_wrap=True)
+    table.add_column("PID", justify="right", no_wrap=True)
+    table.add_column("URL", overflow="fold")
+    table.add_column("Risk", justify="right", no_wrap=True)
+    table.add_column("Top Signal", overflow="fold")
+
+    def _url_score_color(score):
+        if score > 60:
+            return "bold red"
+        if score >= 30:
+            return "yellow"
+        return "green"
+
+    for rec in records:
+        score = int(rec.get("risk_score", 0))
+        color = _url_score_color(score)
+        url = rec.get("tab_url") or "-"
+        if len(url) > 80:
+            url = url[:77] + "..."
+        signals = rec.get("signals") or []
+        top_signal = signals[0] if signals else "-"
+        table.add_row(
+            Text(str(rec.get("browser_name", "unknown"))),
+            Text(str(rec.get("pid", "?"))),
+            Text(url),
+            f"[{color}]{score}[/{color}]",
+            Text(top_signal),
+        )
+    return table
+
+
+def _render_browser_urls_html(url_rows):
+    """Build the Browser URL risk table body for the HTML report.
+
+    `url_rows` come from browser.browser_db.fetch_browser_urls(). All values
+    are HTML-escaped; the URL and title are truncated to keep cells small."""
+    if not url_rows:
+        return "<tr><td colspan='8'><em>No browser URL activity recorded.</em></td></tr>"
+    rows = []
+    for r in url_rows:
+        score = int(r.get("risk_score", 0))
+        lvl = "low" if score < 30 else ("medium" if score <= 60 else "high")
+        badge = f'<span class="badge {lvl}">{score}</span>'
+        title_cell = html.escape(safe_text(r.get("title", ""))[:60])
+        url_cell = html.escape(safe_text(r.get("url", "")))
+        signals = html.escape(safe_text(r.get("signals", ""))).replace("\n", "; ")
+        rows.append(
+            f"<tr>"
+            f"<td>{html.escape(safe_text(r.get('browser_name', '')))}</td>"
+            f"<td>{html.escape(safe_text(r.get('pid', '')))}</td>"
+            f"<td>{url_cell}</td>"
+            f"<td>{title_cell}</td>"
+            f"<td>{'yes' if r.get('is_live_tab') else 'recent'}</td>"
+            f"<td>{badge}</td>"
+            f"<td>{signals}</td>"
+            f"<td>{html.escape(safe_text(r.get('last_seen', '')))}</td>"
+            f"</tr>"
+        )
+    return "\n".join(rows)
+
+
+def render_html_report(records, summary=None, title="Feluda Audit Report", browser_url_rows=None):
     """Return a self-contained HTML audit report string."""
     rows = []
     for rec in records:
@@ -252,6 +327,15 @@ All flags are <strong>signals with reasons</strong>, not malware verdicts.</p>
 <thead><tr>{headers}</tr></thead>
 <tbody>
 {body_rows}
+</tbody>
+</table>
+<h2>Browser URL Activity</h2>
+<table>
+<thead><tr>
+<th>Browser</th><th>PID</th><th>URL</th><th>Title</th><th>Live?</th><th>Risk</th><th>Signals</th><th>Last Seen</th>
+</tr></thead>
+<tbody>
+{_render_browser_urls_html(browser_url_rows)}
 </tbody>
 </table>
 </body>
