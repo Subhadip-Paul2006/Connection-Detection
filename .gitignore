@@ -36,3 +36,6 @@ Plan2.md
 Changes.md
 docs/
 
+
+# Local env (may hold FELUDA_VT_API_KEY in Phase 3+)
+.env
