@@ -8,10 +8,10 @@ from utils.formatting import render_html_report
 log = logger.get_logger("reports.html")
 
 
-def export_html(records, path, summary=None, title="Feluda Audit Report"):
+def export_html(records, path, summary=None, title="Feluda Audit Report", browser_url_rows=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    html = render_html_report(records, summary=summary, title=title)
+    html = render_html_report(records, summary=summary, title=title, browser_url_rows=browser_url_rows)
     try:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(html)
@@ -20,3 +20,4 @@ def export_html(records, path, summary=None, title="Feluda Audit Report"):
         log.error("HTML export failed: %s", exc)
         raise
     return path
+

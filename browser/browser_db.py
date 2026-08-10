@@ -69,31 +69,31 @@ def domain_from_url(url):
     return host.lower()
 
 
-def upsert_browser_url(record, db_path=None):
-    """Insert-or-update one URL record. Returns row id (new) or existing id.
-
-    `record` comes from browser_detector + url_risk_engine, carrying:
-      browser_name, pid, url, title, is_live_tab, risk_score, signals
-    first_seen is preserved across re-observations; last_seen always updates.
-    """
+def upsert_browser_urls(records, db_path=None):
+    """Bulk insert-or-update multiple URL records in a single transaction."""
+    if not records:
+        return
     now = utc_now_iso()
-    domain = domain_from_url(record.get("url", ""))
-    signals = json.dumps(record.get("signals") or [])
-    row = (
-        record.get("browser_name", "unknown"),
-        record.get("pid"),
-        record.get("url", ""),
-        domain,
-        record.get("title", ""),
-        1 if record.get("is_live_tab") else 0,
-        int(record.get("risk_score", 0)),
-        signals,
-        now,
-        now,
-    )
+    rows = []
+    for record in records:
+        url = record.get("url") or record.get("tab_url", "")
+        domain = domain_from_url(url)
+        signals = json.dumps(record.get("signals") or [])
+        rows.append((
+            record.get("browser_name", "unknown"),
+            record.get("pid"),
+            url,
+            domain,
+            record.get("title") or record.get("tab_title", ""),
+            1 if record.get("is_live_tab") else 0,
+            int(record.get("risk_score", 0)),
+            signals,
+            now,
+            now,
+        ))
     try:
         with contextlib.closing(_connect(db_path)) as conn, conn:
-            cur = conn.execute(
+            conn.executemany(
                 """INSERT INTO browser_urls
                    (browser_name, pid, url, domain, title, is_live_tab,
                     risk_score, signals, first_seen, last_seen)
@@ -105,12 +105,16 @@ def upsert_browser_url(record, db_path=None):
                        risk_score  = excluded.risk_score,
                        signals     = excluded.signals,
                        last_seen   = excluded.last_seen""",
-                row,
+                rows,
             )
-            return cur.lastrowid
     except sqlite3.Error as exc:
-        log.error("upsert_browser_url failed: %s", exc)
-        return None
+        log.error("upsert_browser_urls failed: %s", exc)
+
+
+def upsert_browser_url(record, db_path=None):
+    """Insert-or-update one URL record. Returns row id (new) or existing id."""
+    upsert_browser_urls([record], db_path=db_path)
+
 
 
 def fetch_browser_urls(limit=500, min_score=None, db_path=None):

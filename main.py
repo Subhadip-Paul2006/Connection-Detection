@@ -135,19 +135,10 @@ def cmd_browsers(args):
             return []
         records = browser_detector.extract_all_tabs(browsers)
         url_risk_engine.score_records(records)
-        for rec in records:
-            # persist each scored url (first_seen/last_seen bookkeeping)
-            browser_db.upsert_browser_url({
-                "browser_name": rec.get("browser_name"),
-                "pid": rec.get("pid"),
-                "url": rec.get("tab_url", ""),
-                "title": rec.get("tab_title", ""),
-                "is_live_tab": bool(rec.get("is_live_tab")),
-                "risk_score": rec.get("risk_score", 0),
-                "signals": rec.get("signals", []),
-            })
+        browser_db.upsert_browser_urls(records)
         records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
         return records
+
 
     if args.live:
         interval = args.interval or poll_interval
