@@ -1,2 +1,3 @@
 psutil>=5.9
 rich>=13.0
+lz4>=4.0        # Firefox live-tab extraction: decompresses sessionstore-backups/recovery.jsonlz4 (mozLz4)

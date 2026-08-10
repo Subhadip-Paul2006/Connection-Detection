@@ -123,13 +123,12 @@
     "poll_interval_seconds": 10,
     "alert_min_risk_score": 60,
     "known_browsers": {
-      "_comment": "name -> [display, engine, [candidate roots under %LOCALAPPDATA%]]. Each candidate is tried in order; first one containing a profile wins. Handles both classic (BraveSoftware\\...) and Store/UWP-packaged installs (Packages\\<family>\\LocalCache\\Local\\...).",
-      "chrome.exe": ["Chrome", "chromium", ["Google\\Chrome\\User Data"]],
-      "brave.exe":  ["Brave",  "chromium", ["BraveSoftware\\Brave-Browser\\User Data"]],
-      "msedge.exe": ["Edge",   "chromium", ["Microsoft\\Edge\\User Data", "Packages\\Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe\\LocalCache\\Local\\Microsoft\\Edge\\User Data"]],
-      "msedgewebview2.exe": ["WebView2", "chromium", ["Microsoft\\EdgeWebView\\User Data"]],
-      "arc.exe":    ["Arc",    "chromium", ["Arc\\User Data", "Packages\\TheBrowserCompany.Arc_ttt1ap7aakyb4\\LocalCache\\Local\\Arc\\User Data"]],
-      "firefox.exe":["Firefox","gecko",   [null]]
+      "_comment": "name -> [display, engine, method, [candidate roots]]. method drives extract_tab dispatch (no per-browser forking in code). chromium roots resolve under %LOCALAPPDATA%; gecko/firefox roots resolve under %APPDATA% because that's where Mozilla puts its Profiles tree. First existing candidate root wins.",
+      "chrome.exe": ["Chrome", "chromium", "chromium_history_fallback", ["Google\\Chrome\\User Data"]],
+      "brave.exe":  ["Brave",  "chromium", "chromium_history_fallback", ["BraveSoftware\\Brave-Browser\\User Data"]],
+      "msedge.exe": ["Edge",   "chromium", "chromium_history_fallback", ["Microsoft\\Edge\\User Data", "Packages\\Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe\\LocalCache\\Local\\Microsoft\\Edge\\User Data"]],
+      "arc.exe":    ["Arc",    "chromium", "chromium_history_fallback", ["Arc\\User Data", "Packages\\TheBrowserCompany.Arc_ttt1ap7aakyb4\\LocalCache\\Local\\Arc\\User Data"]],
+      "firefox.exe":["Firefox","gecko",    "firefox_session",           ["Mozilla\\Firefox"]]
     },
     "max_history_rows_per_profile": 500
   },
