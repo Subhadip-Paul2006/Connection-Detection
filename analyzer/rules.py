@@ -44,7 +44,7 @@ def _add(record, rule_key, weight, reason):
 
 
 def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
-            use_reputation=False, use_cert=False, use_geoip=False):
+            use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False):
     """Run all rules over enriched, annotated records.
 
     Args:
@@ -79,6 +79,12 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
     _geoip = None
     if use_geoip:
         from browser import geoip_engine as _geoip
+
+    # Lineage analysis (Stage 5) — opt-in via --lineage-check; per-scan psutil
+    # walk, never cached; scores fold into the same additive 0–100 total.
+    _lineage = None
+    if use_lineage:
+        from analyzer import lineage_analyzer as _lineage
 
     # Pre-compute external-connection count per pid for the burst signal.
     ext_per_pid = Counter()
@@ -211,6 +217,19 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
                     "asn_org": entry.get("asn_org", ""),
                     "cached": True,
                 }
+
+        # 10. Process lineage walks (synchronous — local psutil, no cost ceiling)
+        #     Opt-in via --lineage-check. Re-walked every scan because the
+        #     parent tree is point-in-time; safety nets: missing/dead parents
+        #     mark `is_partial_chain`, not crash. The risk (0–100) folds in.
+        if _lineage is not None and rec.get("pid") is not None:
+            before = rec.get("risk_score", 0)
+            _lineage.analyze(rec, save_to_db=False)  # DB write happens post-save_scan
+            after = rec.get("risk_score", 0)
+            if after > before:
+                # don't re-append lineage signals into reasons — analyze() did
+                # this already (LINEAGE-prefixed marking); avoid duplicates
+                rec["lineage_score_added"] = True                # audit edge
 
         apply_score(rec)
 
