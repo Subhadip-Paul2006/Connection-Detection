@@ -171,5 +171,21 @@
       "vt_suspicious_only": 10,
       "vt_unknown": 0
     }
+  },
+
+  "cert": {
+    "_comment": "Stage 3: TLS certificate inspection for https URLs. Fully offline-local after Stage 1; no API keys, no external quota. Values are additive and capped at 100 together with url_risk and vt weights. Self-signed/untrusted means no trusted root was presented.",
+    "connect_timeout_seconds": 3,
+    "cache_ttl_hours": 24,
+    "cache_ttl_hours_unreachable": 1,
+    "weights": {
+      "cert_expired": 25,
+      "cert_not_yet_valid": 20,
+      "cert_self_signed_or_untrusted": 35,
+      "cert_hostname_mismatch": 40,
+      "cert_short_validity": 15,
+      "cert_weak_signature": 10,
+      "no_https": 5
+    }
   }
 }

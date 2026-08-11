@@ -279,6 +279,14 @@ def build_parser():
             "--no-reputation-check", action="store_true",
             help="skip VirusTotal lookups even when a key exists",
         )
+        parser.add_argument(
+            "--cert-check", action="store_true",
+            help="include TLS certificate inspection (opt-in; https:// URLs only)",
+        )
+        parser.add_argument(
+            "--no-cert-check", action="store_true",
+            help="skip TLS certificate checks (overrides --cert-check)",
+        )
 
     s = sub.add_parser("scan", help="Run a single scan and print a table")
     s.add_argument("--all", action="store_true", help="include quiet LISTEN sockets")
@@ -328,6 +336,13 @@ def _reputation_enabled(args):
     if getattr(args, "no_reputation_check", False):
         return False
     return reputation_engine.vt_available()
+
+
+def _cert_enabled(args):
+    """True when TLS cert inspection is enabled for this run."""
+    if not getattr(args, "cert_check", False):
+        return False
+    return not getattr(args, "no_cert_check", False)
 
 
 def main():

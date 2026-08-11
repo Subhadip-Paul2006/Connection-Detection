@@ -8,12 +8,22 @@ changes.
 """
 
 from collections import Counter
+from urllib.parse import urlsplit
 
 from utils import logger
 from utils.config_loader import settings
 
 from analyzer import processes as proc_analyzer
 from analyzer.risk_score import apply_score
+
+
+def _host_from_url(url):
+    """Safe helper used by the cert stage: return lowercase hostname or ""."""
+    try:
+        parts = urlsplit(url)
+    except (ValueError, TypeError):
+        return ""
+    return (parts.hostname or "").lower()
 
 # Deterministic rule evaluation order (for stable reason lists).
 RULE_ORDER = [
@@ -33,7 +43,8 @@ def _add(record, rule_key, weight, reason):
     record["reasons"].append(f"{reason} (+{weight})")
 
 
-def analyze(records, baseline=None, repeat_keys=None, hash_processes=True, use_reputation=False):
+def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
+            use_reputation=False, use_cert=False):
     """Run all rules over enriched, annotated records.
 
     Args:
@@ -57,6 +68,12 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True, use_r
     if use_reputation:
         from browser import reputation_engine as _re
         _vt = _re if _re.vt_available() else None
+
+    # certificate inspection (Stage 3) — opt-in via --cert-check; cached only
+    _cert = None
+    if use_cert:
+        from browser import cert_inspector as _ci
+        _cert = _ci
 
     # Pre-compute external-connection count per pid for the burst signal.
     ext_per_pid = Counter()
@@ -150,8 +167,24 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True, use_r
                     rec["rules_applied"]["vt_reputation"] = rec["rules_applied"].get(
                         "vt_reputation", 0) + pts
                     rec["reasons"].append(f"{reason} (+{pts})")
-                # rec["risk_score"] is recomputed by apply_score below
 
+        # 8. TLS certificate inspection (cached-only, non-blocking)
+        #    Fires only when --cert-check is on in monitor/scan and a cached
+        #    cert_checks row exists for the record's remote host. The scan
+        #    pipeline never blocks on a live handshake; a recent-cache miss
+        #    just means Stage 3 hasn't visited this hostname yet.
+        if _cert is not None and rec.get("url"):
+            cached = _cert.cache_get(_host_from_url(rec["url"]))
+            if cached is not None and not cached.get("unreachable"):
+                for flag in cached.get("cert_flags", []):
+                    pts = settings().get("cert", {}).get("weights", {}).get(flag, 0)
+                    if pts:
+                        rec["rules_applied"][flag] = rec["rules_applied"].get(flag, 0) + pts
+                        rec["reasons"].append(f"TLS: {flag} (+{pts})")
+                rec["risk_score"] = min(
+                    100, rec.get("risk_score", 0) + cached.get("risk_points", 0))
+                rec["cert"] = {k: cached.get(k) for k in
+                               ("hostname", "cert_flags", "risk_points")}
         apply_score(rec)
 
     if hash_processes:
