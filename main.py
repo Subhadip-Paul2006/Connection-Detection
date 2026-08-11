@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from utils import logger
@@ -28,6 +29,40 @@ from utils.formatting import print_banner, render_connections_table, render_brow
 console = Console()
 log = logger.get_logger("main")
 
+
+
+def _print_lineage_detail(rec):
+    """Render a stored lineage chain (from `history --show-lineage N`) as a
+    rich panel + per-link table. `rec` comes from lineage_analyzer.fetch_lineage().
+    """
+    chain = rec.get("chain") or []
+    lines = [
+        f"[bold]history.id:[/bold] {rec.get('connection_id')}",
+        f"[bold]pid:[/bold] {rec.get('pid')}",
+        f"[bold]partial:[/bold] {rec.get('is_partial_chain')}"
+        + (f" (orphan ppid: {rec.get('orphan_parent_pid')})" if rec.get('orphan_parent_pid') else ""),
+        f"[bold]risk points:[/bold] {rec.get('risk_points', 0)}",
+        f"[bold]signals:[/bold] {'; '.join(rec.get('signals') or []) or 'none'}",
+        f"[bold]scanned at:[/bold] {rec.get('scanned_at', '')}",
+    ]
+    console.print(Panel("\n".join(lines), title="[bold cyan]Stored process lineage[/bold cyan]"))
+
+    table = Table(title="Process chain (newest -> oldest parent)")
+    for col in ("#", "PID", "Name", "EXE", "Cmdline"):
+        table.add_column(col, no_wrap=col != "exe")
+    for i, link in enumerate(chain, 1):
+        exe = link.get("exe_path") or "unknown"
+        if len(exe) > 80:
+            exe = exe[:77] + "..."
+        cmdline = (" ".join(link.get("cmdline") or [])) or "-"
+        table.add_row(
+            str(i),
+            str(link.get("pid")),
+            str(link.get("name") or "unknown"),
+            exe,
+            cmdline[:120] + ("..." if len(cmdline) > 120 else ""),
+        )
+    console.print(table)
 
 
 def _summary_line(records):
@@ -47,19 +82,47 @@ def _summary_line(records):
 
 def cmd_scan(args):
     from monitor.pipeline import run_scan
+    from database import database
+    from analyzer import lineage_analyzer
 
-    records = run_scan(use_baseline=not args.no_baseline)
+    use_lineage = _lineage_enabled(args)
+    records = run_scan(use_baseline=not args.no_baseline, use_lineage=use_lineage, args=args)
     console.print(
-        "\\[Feluda] single scan â€” heuristic signals only, not malware verdicts.",
+        "\\[Feluda] single scan — heuristic signals only, not malware verdicts.",
         style="dim",
     )
     console.print(_summary_line(records))
+    if use_lineage:
+        # persist a row per analyzed connection, then link lineage walk into
+        # process_lineage.connection_id so `--show-lineage <id>` can fetch
+        # the chain. Rows with zero lineage signals are still written (empty
+        # triggers list) so the timeline table below shows every pid checked,
+        # not just ones with active flags.
+        ids = database.save_scan(records, return_ids=True)
+        with_lineage = [(i, r) for i, r in zip(ids, records)
+                        if r.get("lineage")]
+        for i, r in with_lineage:
+            lineage_analyzer.save_lineage(
+                connection_id=i,
+                lineage=r["lineage"],
+                fires={},
+                db_path=None,
+            )
+        console.print(f"[dim]lineage rows recorded: {len(with_lineage)} "
+                      "(use 'history --show-lineage <id>' to drill in)[/dim]")
     table = render_connections_table(
         records if args.all else [r for r in records if r.get("status") != "LISTEN" or r.get("risk_score", 0) > 0],
-        title="Feluda â€” Network Connections",
+        title="Feluda — Network Connections",
         show_all=True,
     )
     console.print(table)
+    if use_lineage and with_lineage:
+        console.print("\n[bold cyan]Lineage findings[/bold cyan]")
+        for i, r in with_lineage:
+            chain = r.get("lineage", {}).get("chain", [])
+            console.print(f"[dim]conn id={i} pid={r.get('pid')}:[/dim] " +
+                          " <- ".join(str(link.get("name")) for link in chain[:4])
+                          + (" ..." if len(chain) > 4 else ""))
     return 0
 
 
@@ -71,6 +134,7 @@ def cmd_monitor(args):
         use_reputation=_reputation_enabled(args),
         use_cert=_cert_enabled(args),
         use_geoip=_geoip_enabled(args),
+        use_lineage=_lineage_enabled(args),
     )
     return 0
 
@@ -97,6 +161,17 @@ def cmd_baseline(args):
 
 def cmd_history(args):
     from database import database
+    from analyzer import lineage_analyzer
+
+    # --show-lineage <id>: drill into a single past scan's process chain.
+    if getattr(args, "show_lineage", None) is not None:
+        rec = lineage_analyzer.fetch_lineage(args.show_lineage)
+        if rec is None:
+            console.print(f"[yellow]No lineage stored for history.id={args.show_lineage}. "
+                          "Run with --lineage-check to capture chains.[/yellow]")
+            return 0
+        _print_lineage_detail(rec)
+        return 0
 
     rows = database.fetch_history(
         limit=args.limit, level=args.level, country=getattr(args, "country", None)
@@ -351,6 +426,14 @@ def build_parser():
             "--no-geo-check", action="store_true",
             help="skip GeoIP/ASN enrichment (overrides --geo-check)",
         )
+        parser.add_argument(
+            "--lineage-check", action="store_true",
+            help="include process-tree lineage scoring on connection-owning processes (opt-in; local only)",
+        )
+        parser.add_argument(
+            "--no-lineage-check", action="store_true",
+            help="skip process-tree lineage scoring (overrides --lineage-check)",
+        )
 
     s = sub.add_parser("scan", help="Run a single scan and print a table")
     s.add_argument("--all", action="store_true", help="include quiet LISTEN sockets")
@@ -372,6 +455,8 @@ def build_parser():
     h.add_argument("--limit", type=int, default=50)
     h.add_argument("--level", choices=["LOW", "MEDIUM", "HIGH", "CRITICAL"], default=None)
     h.add_argument("--country", help="filter by ISO-3166 country code (requires --geo-check data to be populated)")
+    h.add_argument("--show-lineage", type=int, default=None,
+                   help="show stored process lineage details for a past scan row (history.id)")
     h.set_defaults(func=cmd_history)
 
     e = sub.add_parser("export", help="Export current scan to CSV/JSON/HTML")
@@ -415,6 +500,13 @@ def _geoip_enabled(args):
     if not getattr(args, "geo_check", False):
         return False
     return not getattr(args, "no_geo_check", False)
+
+
+def _lineage_enabled(args):
+    """True when Stage 5 lineage checks are enabled (`--lineage-check`)."""
+    if not getattr(args, "lineage_check", False):
+        return False
+    return not getattr(args, "no_lineage_check", False)
 
 
 def main():
