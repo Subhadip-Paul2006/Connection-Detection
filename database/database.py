@@ -70,8 +70,13 @@ def baseline_key(process_name, remote_port):
     return f"{(process_name or 'unknown').lower()}:{remote_port}"
 
 
-def save_scan(records, db_path=None):
-    """Persist a batch of analyzed records. Returns inserted row count."""
+def save_scan(records, db_path=None, return_ids=False):
+    """Persist a batch of analyzed records. Returns inserted row count.
+
+    When return_ids=True, also returns a list of inserted history row ids (same
+    order as `records`) so later phases can attach deeper metadata (e.g.
+    process_lineage.connection_id) without inventing a disconnected table.
+    """
     from utils.formatting import build_connection_payload
 
     rows = []
@@ -85,22 +90,27 @@ def save_scan(records, db_path=None):
             geo.get("country", ""), geo.get("country_code", ""),
         ))
     inserted = 0
+    row_ids = []
     try:
         # contextlib.closing guarantees close(); a bare `with` on sqlite3 only
         # commits — it never closes the connection, leaking one per call.
         with contextlib.closing(_connect(db_path)) as conn, conn:
-            cur = conn.executemany(
-                """INSERT INTO history
-                   (timestamp, pid, process_name, exe_path, sha256,
-                    local_ip, local_port, remote_ip, remote_port,
-                    status, risk_score, risk_level, signals, country, country_code)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                rows,
-            )
-            inserted = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else len(rows)
+            for row in rows:
+                cur = conn.execute(
+                    """INSERT INTO history
+                       (timestamp, pid, process_name, exe_path, sha256,
+                        local_ip, local_port, remote_ip, remote_port,
+                        status, risk_score, risk_level, signals, country, country_code)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    row,
+                )
+                row_ids.append(cur.lastrowid)
+            inserted = len(row_ids)
         log.info("persisted %d history rows", inserted)
     except sqlite3.Error as exc:
         log.error("save_scan failed: %s", exc)
+    if return_ids:
+        return row_ids
     return inserted
 
 
