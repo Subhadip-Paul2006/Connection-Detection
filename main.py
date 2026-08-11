@@ -1,7 +1,7 @@
-"""Feluda — defensive network connection monitor & triage CLI.
+﻿"""Feluda â€” defensive network connection monitor & triage CLI.
 
 A monitoring/triage tool, not an antivirus. Every flag is a *signal* with an
-explicit reason list — never a definitive threat determination.
+explicit reason list â€” never a definitive threat determination.
 
 Usage:
     python main.py scan                          # one-shot scan, rich table
@@ -50,13 +50,13 @@ def cmd_scan(args):
 
     records = run_scan(use_baseline=not args.no_baseline)
     console.print(
-        "\\[Feluda] single scan — heuristic signals only, not malware verdicts.",
+        "\\[Feluda] single scan â€” heuristic signals only, not malware verdicts.",
         style="dim",
     )
     console.print(_summary_line(records))
     table = render_connections_table(
         records if args.all else [r for r in records if r.get("status") != "LISTEN" or r.get("risk_score", 0) > 0],
-        title="Feluda — Network Connections",
+        title="Feluda â€” Network Connections",
         show_all=True,
     )
     console.print(table)
@@ -119,14 +119,41 @@ def cmd_history(args):
 
 
 def cmd_browsers(args):
-    """Phase 1 Browser & URL Threat Detection: detect running browsers,
-    extract recent open/recent URLs, score each structurally, persist, and
-    render the Browser Activity panel (with optional live polling)."""
+    """Browser & URL threat detection: detect running browsers, extract
+    recent/open URLs, score each structurally (and optionally via VirusTotal),
+    persist, and render the Browser Activity panel (with optional live polling).
+
+    --reputation-check is opt-in: without it, behavior exactly matches Phase 1/2
+    (offline-only, no HTTP calls). WITH it, cached VT results are applied
+    synchronously to known URLs and any new URLs are enqueued for the async
+    worker â€” the next poll picks up their enriched risk_score.
+    """
     from browser import browser_db
-    from browser import browser_detector, url_risk_engine
+    from browser import browser_detector, reputation_engine, url_risk_engine
 
     alert_min = settings().get("browser", {}).get("alert_min_risk_score", 60)
     poll_interval = settings().get("browser", {}).get("poll_interval_seconds", 10)
+
+    # reputation-check is flag-only; --no-reputation-check always wins.
+    use_reputation = (
+        getattr(args, "reputation_check", False)
+        and not getattr(args, "no_reputation_check", False)
+    )
+
+    if use_reputation and not reputation_engine.vt_available():
+        console.print(
+            "[bold red]--reputation-check passed but FELUDA_VT_API_KEY is not set.[/bold red]\n"
+            "Get a free key at https://www.virustotal.com/gui/join-us, then set:\n"
+            "  powershell> $env:FELUDA_VT_API_KEY = \"<key>\"   (current session)\n"
+            "  powershell> setx FELUDA_VT_API_KEY \"<key>\"       (permanent)\n"
+            "  (or add FELUDA_VT_API_KEY=<key> to .env in the project root)"
+        )
+        logger.get_logger("main").error("reputation-check requested without FELUDA_VT_API_KEY")
+        return 2
+
+    vt_queue = None
+    if use_reputation:
+        vt_queue = reputation_engine.VTQueue()
 
     def sweep_once():
         browsers = browser_detector.detect_running_browsers()
@@ -134,16 +161,20 @@ def cmd_browsers(args):
             console.print("[yellow]No supported browsers currently running.[/yellow]")
             return []
         records = browser_detector.extract_all_tabs(browsers)
-        url_risk_engine.score_records(records)
+        # Stage 1: free structural scoring. Stage 2: VT cache data applied only
+        # if --reputation-check is on and a cached result exists (no blocking).
+        url_risk_engine.score_records(records, use_reputation=use_reputation)
+        if use_reputation and vt_queue is not None:
+            for rec in records:
+                vt_queue.submit_url(rec.get("tab_url", ""))   # enqueue misses only
         browser_db.upsert_browser_urls(records)
         records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
         return records
 
-
     if args.live:
         interval = args.interval or poll_interval
         console.print(
-            f"[bold cyan]Feluda browser watch[/bold cyan] — polling every {interval}s. Ctrl+C to stop."
+            f"[bold cyan]Feluda browser watch[/bold cyan] â€” polling every {interval}s. Ctrl+C to stop."
         )
         seen = set()
         try:
@@ -167,6 +198,8 @@ def cmd_browsers(args):
                     )
                 seen = current
                 console.print(render_browser_activity_panel(records[:50]))
+                if vt_queue is not None:
+                    console.print(f"[dim]{vt_queue.quota_status()}[/dim]")
                 import time
                 time.sleep(max(1, int(interval)))
         except KeyboardInterrupt:
@@ -175,6 +208,8 @@ def cmd_browsers(args):
     else:
         records = sweep_once()
         console.print(render_browser_activity_panel(records[:80]))
+        if vt_queue is not None:
+            console.print(f"[dim]{vt_queue.quota_status()}[/dim]")
 
     return 0
 
@@ -184,7 +219,7 @@ def cmd_export(args):
     from reports.csv_export import export_csv
     from reports.json_export import export_json
     from reports.html_export import export_html
-    from browser import browser_db, browser_detector, url_risk_engine
+    from browser import browser_db, browser_detector, reputation_engine, url_risk_engine
 
     outdir = Path(settings().get("export", {}).get("directory", "exports"))
     console.print(f"[bold cyan]Running scan for export -> {outdir}/[/bold cyan]")
@@ -200,9 +235,15 @@ def cmd_export(args):
         console.print("[bold cyan]Also exporting browser URL risk data ...[/bold cyan]")
         bs = browser_detector.detect_running_browsers()
         browser_records = browser_detector.extract_all_tabs(bs)
-        url_risk_engine.score_records(browser_records)
+        use_rep = _reputation_enabled(args)
+        url_risk_engine.score_records(browser_records, use_reputation=use_rep)
         summary["browser urls"] = len(browser_records)
         summary["browser MED+"] = sum(1 for r in browser_records if r.get("risk_score", 0) >= 30)
+        if use_rep:
+            vq = reputation_engine.VTQueue()
+            for rec in browser_records:
+                vq.submit_url(rec.get("tab_url", ""))
+            console.print(f"[dim]{vq.quota_status()}[/dim]")
 
     written = []
     if args.format in ("csv", "all"):
@@ -225,15 +266,31 @@ def build_parser():
     p.add_argument("--no-banner", action="store_true", help="Suppress startup ASCII banner")
     sub = p.add_subparsers(dest="command", required=True)
 
+    def _add_reputation_flags(parser):
+        """Opt-in VT reputation: scoring only happens if --reputation-check is
+        passed AND FELUDA_VT_API_KEY is configured; --no-reputation-check
+        always wins even if both flags are given.
+        """
+        parser.add_argument(
+            "--reputation-check", action="store_true",
+            help="include VirusTotal reputation signal (opt-in; needs FELUDA_VT_API_KEY)",
+        )
+        parser.add_argument(
+            "--no-reputation-check", action="store_true",
+            help="skip VirusTotal lookups even when a key exists",
+        )
+
     s = sub.add_parser("scan", help="Run a single scan and print a table")
     s.add_argument("--all", action="store_true", help="include quiet LISTEN sockets")
     s.add_argument("--no-baseline", action="store_true", help="skip baseline comparison")
+    _add_reputation_flags(s)
     s.set_defaults(func=cmd_scan)
 
     m = sub.add_parser("monitor", help="Real-time polling monitor")
     m.add_argument("--interval", type=int, default=None, help="poll seconds (default from config)")
     m.add_argument("--once", action="store_true", help="run exactly one scan and exit")
     m.add_argument("--no-baseline", action="store_true", help="skip baseline comparison")
+    _add_reputation_flags(m)
     m.set_defaults(func=cmd_monitor)
 
     b = sub.add_parser("baseline", help="Learn normal process->remote-port patterns now")
@@ -248,14 +305,29 @@ def build_parser():
     e.add_argument("--format", choices=["csv", "json", "html", "all"], default="all")
     e.add_argument("--no-baseline", action="store_true")
     e.add_argument("--scan-browsers", action="store_true", help="also include Browser URL risk section")
+    _add_reputation_flags(e)
     e.set_defaults(func=cmd_export)
 
-    br = sub.add_parser("browsers", help="Browser & URL threat detection (Phase 1)")
+    br = sub.add_parser("browsers", help="Browser & URL threat detection")
     br.add_argument("--live", action="store_true", help="poll for newly opened browsers/URLs")
     br.add_argument("--interval", type=int, default=None, help="poll seconds for --live (default from config)")
+    _add_reputation_flags(br)
     br.set_defaults(func=cmd_browsers)
 
     return p
+
+
+def _reputation_enabled(args):
+    """True when VT is allowed to score: flag present AND key configured.
+    Mirrors the logic used by cmd_browsers; scan/monitor/export read from the
+    same env var + argument names so behavior is identical across modes.
+    """
+    from browser import reputation_engine
+    if not getattr(args, "reputation_check", False):
+        return False
+    if getattr(args, "no_reputation_check", False):
+        return False
+    return reputation_engine.vt_available()
 
 
 def main():

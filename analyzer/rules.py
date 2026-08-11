@@ -33,7 +33,7 @@ def _add(record, rule_key, weight, reason):
     record["reasons"].append(f"{reason} (+{weight})")
 
 
-def analyze(records, baseline=None, repeat_keys=None, hash_processes=True):
+def analyze(records, baseline=None, repeat_keys=None, hash_processes=True, use_reputation=False):
     """Run all rules over enriched, annotated records.
 
     Args:
@@ -42,12 +42,21 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True):
         baseline: set of "name:port" strings considered normal, or None to skip.
         repeat_keys: set of connection keys seen in >= N scans, or None.
         hash_processes: if True, SHA-256 notable executables (Phase 9).
+        use_reputation: if True AND FELUDA_VT_API_KEY is configured AND a
+            cached result exists for this record's remote IP, add a VT-based
+            penalty per the vt.weights block (spec §5).
 
     Returns the same records with risk_score, risk_level, reasons, rules_applied.
     """
     cfg = settings()
     weights = {**cfg.get("rule_weights", {})}
     thresholds = cfg.get("thresholds", {})
+
+    # reputation integration is opt-in per-poll only
+    _vt = None
+    if use_reputation:
+        from browser import reputation_engine as _re
+        _vt = _re if _re.vt_available() else None
 
     # Pre-compute external-connection count per pid for the burst signal.
     ext_per_pid = Counter()
@@ -127,6 +136,21 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True):
                     f"'{proc.get('name', 'unknown')}:{rec.get('remote_port')}' "
                     f"is outside the learned baseline",
                 )
+
+        # 7. VirusTotal IP reputation (cached-only, non-blocking)
+        #    Fires only when --reputation-check is on in monitor/scan and
+        #    there's a cached result for this remote IP in
+        #    url_reputation_cache. A cache miss here just yields nothing —
+        #    the scan proceeds with the structural score it already has.
+        if _vt is not None and is_ext and rec.get("remote_ip"):
+            cached = _vt.cache_get(rec["remote_ip"])
+            if cached is not None:
+                pts, reason = _vt.score_result(cached)
+                if pts:
+                    rec["rules_applied"]["vt_reputation"] = rec["rules_applied"].get(
+                        "vt_reputation", 0) + pts
+                    rec["reasons"].append(f"{reason} (+{pts})")
+                # rec["risk_score"] is recomputed by apply_score below
 
         apply_score(rec)
 

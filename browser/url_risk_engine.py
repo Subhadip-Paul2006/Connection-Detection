@@ -275,16 +275,58 @@ def score_url(url):
     }
 
 
-def score_records(records):
-    """Score every detector record in-place; returns the same list."""
+def check_reputation_vt(url):
+    """Stage 2 heuristic: apply VirusTotal cache data as a scoring signal.
+
+    Returns (triggered, key, reason) where key is the empty string when VT is
+    disabled or no cached result exists, so callers can't accidentally skip
+    structural scoring while waiting on a lookup. The scoring points come from
+    vt.weights (separate from url_risk.weights until the response is in hand).
+    """
+    from browser import reputation_engine
+    if not reputation_engine.vt_available():
+        return False, "", ""
+    cached = reputation_engine.cache_get(url)
+    if cached is None:
+        return False, "", ""
+    pts, reason = reputation_engine.score_result(cached)
+    # triggered=False lets the caller decide whether to apply pts without
+    # double-counting; pts==0 means "we have a result, no penalty" (clean/unknown).
+    return True, "vt_reputation", (reason, pts)
+
+
+def score_records(records, use_reputation=False):
+    """Score every detector record in-place. When use_reputation=True AND a
+    cached VirusTotal result exists, fold its points into risk_score and
+    append its signal to the existing reason list.
+
+    - Never blocks: only cached results are applied here. Live VT lookups are
+      enqueued separately by the caller.
+    - Transparent: every record gets a `signals` list either way.
+    """
     for rec in records:
         if not rec.get("tab_url"):
             rec.setdefault("risk_score", 0)
             rec.setdefault("signals", [])
             continue
-        scored = score_url(rec["tab_url"])
-        rec["risk_score"] = scored["risk_score"]
-        rec["signals"] = scored["signals"]
+        scored = score_url(rec["tab_url"])                 # structural (Stage 1)
+        risk = scored["risk_score"]
+        signals = list(scored["signals"])
+        applied = dict(scored["rules_applied"])
+        if use_reputation:
+            from browser import reputation_engine
+            cached = reputation_engine.cache_get(rec["tab_url"])
+            if cached is not None:
+                pts, reason = reputation_engine.score_result(cached)
+                applied["vt_reputation"] = applied.get("vt_reputation", 0) + pts
+                if reason:
+                    signals.append(f"{reason} (+{pts})")
+                risk = min(100, risk + pts)
+                rec["vt"] = {k: cached.get(k) for k in
+                             ("vt_malicious", "vt_suspicious", "vt_total", "cached")}
+        rec["risk_score"] = risk
+        rec["signals"] = signals
+        rec["rules_applied"] = applied
     return records
 
 

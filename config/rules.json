@@ -155,5 +155,21 @@
       "typosquat": 30,
       "url_length_outlier": 10
     }
+  },
+
+  "vt": {
+    "_comment": "VirusTotal public-API reputation checks. Free tier: 4 req/min, ~500 req/day. All lookups are opt-in via --reputation-check or FELUDA_VT_API_KEY, cached in SQLite, and never block the polling loop.",
+    "base_url": "https://www.virustotal.com/api/v3",
+    "rate_limit_per_minute": 4,
+    "daily_quota": 500,
+    "cache_ttl_days": 7,
+    "cache_ttl_days_unknown": 1,
+    "request_timeout_seconds": 10,
+    "weights": {
+      "vt_flagged_by_multiple_engines": 40,
+      "vt_flagged_by_few_engines": 20,
+      "vt_suspicious_only": 10,
+      "vt_unknown": 0
+    }
   }
 }
