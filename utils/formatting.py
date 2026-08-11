@@ -182,6 +182,9 @@ def render_browser_activity_panel(records, title="Browser Activity"):
     """Render the Browser Activity panel: one rich Table, rows pre-scored up
     to color thresholds (green <30, yellow 30-60, red >60) per spec §5.
 
+    Optional Stage 4 enrichment: when a record's `geoip` dict is present
+    the extra `Country` and `ASN` columns are shown.
+
     `records` are output of browser.url_risk_engine.score_records().
     """
     from rich.table import Table
@@ -192,6 +195,8 @@ def render_browser_activity_panel(records, title="Browser Activity"):
     table.add_column("PID", justify="right", no_wrap=True)
     table.add_column("URL", overflow="fold")
     table.add_column("Risk", justify="right", no_wrap=True)
+    table.add_column("Country", no_wrap=True)
+    table.add_column("ASN", no_wrap=True)
     table.add_column("Top Signal", overflow="fold")
 
     def _url_score_color(score):
@@ -209,11 +214,14 @@ def render_browser_activity_panel(records, title="Browser Activity"):
             url = url[:77] + "..."
         signals = rec.get("signals") or []
         top_signal = signals[0] if signals else "-"
+        geo = rec.get("geoip") or {}
         table.add_row(
             Text(str(rec.get("browser_name", "unknown"))),
             Text(str(rec.get("pid", "?"))),
             Text(url),
             f"[{color}]{score}[/{color}]",
+            Text(str(geo.get("country_code", "")) or "—"),
+            Text(str(geo.get("asn", "")) or "—"),
             Text(top_signal),
         )
     return table

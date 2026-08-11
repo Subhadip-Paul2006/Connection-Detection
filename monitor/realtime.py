@@ -28,7 +28,8 @@ def _key(rec):
     return (rec.get("pid"), rec.get("local_port"), rec.get("remote_ip"), rec.get("remote_port"))
 
 
-def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_baseline=True):
+def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_baseline=True,
+               use_reputation=False, use_cert=False, use_geoip=False):
     """Start the polling monitor loop. Ctrl+C exits cleanly."""
     cfg = settings()
     if interval is None:
@@ -59,7 +60,10 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
             repeat_keys = store.repeat_keys(min_repeat)
 
             baseline = database.load_baseline() if use_baseline else None
-            records = rules.analyze(records, baseline=baseline, repeat_keys=repeat_keys)
+            records = rules.analyze(
+                records, baseline=baseline, repeat_keys=repeat_keys,
+                use_reputation=use_reputation, use_cert=use_cert, use_geoip=use_geoip,
+            )
             records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
 
             current = {_key(r) for r in records}

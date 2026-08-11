@@ -66,7 +66,12 @@ def cmd_scan(args):
 def cmd_monitor(args):
     from monitor.realtime import run_monitor
 
-    run_monitor(interval=args.interval, once=args.once, use_baseline=not args.no_baseline)
+    run_monitor(
+        interval=args.interval, once=args.once, use_baseline=not args.no_baseline,
+        use_reputation=_reputation_enabled(args),
+        use_cert=_cert_enabled(args),
+        use_geoip=_geoip_enabled(args),
+    )
     return 0
 
 
@@ -93,13 +98,15 @@ def cmd_baseline(args):
 def cmd_history(args):
     from database import database
 
-    rows = database.fetch_history(limit=args.limit, level=args.level)
+    rows = database.fetch_history(
+        limit=args.limit, level=args.level, country=getattr(args, "country", None)
+    )
     if not rows:
         console.print("[yellow]No history yet. Run 'python main.py scan' or 'monitor' first.[/yellow]")
         return 0
 
     table = Table(title=f"Feluda History (latest {len(rows)})")
-    for col in ("Timestamp", "PID", "Process", "Local", "Remote", "Status", "Score", "Level", "Signals"):
+    for col in ("Timestamp", "PID", "Process", "Local", "Remote", "Country", "Status", "Score", "Level", "Signals"):
         table.add_column(col, no_wrap=col in ("PID", "Status", "Score", "Level"))
     for r in reversed(rows):
         table.add_row(
@@ -108,6 +115,7 @@ def cmd_history(args):
             str(r.get("process_name", "")),
             f"{r.get('local_ip') or ''}:{r.get('local_port') or ''}",
             f"{r.get('remote_ip') or ''}:{r.get('remote_port') or ''}",
+            str(r.get("country_code", "")),
             str(r.get("status", "")),
             str(r.get("risk_score", "")),
             str(r.get("risk_level", "")),
@@ -155,6 +163,16 @@ def cmd_browsers(args):
     if use_reputation:
         vt_queue = reputation_engine.VTQueue()
 
+    use_cert = _cert_enabled(args)
+    use_geoip = _geoip_enabled(args)
+
+    cert_worker = geo_worker = None
+    if use_cert:
+        from browser import cert_inspector as _cert_inspector
+    if use_geoip:
+        from browser import geoip_engine as _geoip_engine
+        geo_worker = _geoip_engine.GeoIPQueue()
+
     def sweep_once():
         browsers = browser_detector.detect_running_browsers()
         if not browsers:
@@ -163,10 +181,48 @@ def cmd_browsers(args):
         records = browser_detector.extract_all_tabs(browsers)
         # Stage 1: free structural scoring. Stage 2: VT cache data applied only
         # if --reputation-check is on and a cached result exists (no blocking).
-        url_risk_engine.score_records(records, use_reputation=use_reputation)
+        url_risk_engine.score_records(
+            records, use_reputation=use_reputation,
+            use_certs=use_cert, use_geoip=use_geoip,
+        )
+        # Enqueue live lookups for cache misses only — never block this sweep.
         if use_reputation and vt_queue is not None:
             for rec in records:
-                vt_queue.submit_url(rec.get("tab_url", ""))   # enqueue misses only
+                vt_queue.submit_url(rec.get("tab_url", ""))
+        if use_cert:
+            from browser import cert_inspector as _ci
+            for rec in records:
+                if (rec.get("tab_url") or "").lower().startswith("https://"):
+                    host = ""
+                    try:
+                        from urllib.parse import urlsplit
+                        host = (urlsplit(rec["tab_url"]).hostname or "").lower()
+                    except (ValueError, TypeError):
+                        pass
+                    if host and _ci.cache_get(host) is None:
+                        _ci.inspect_url(rec["tab_url"], connect_now=False)
+                        # enqueue for live fetch inside a background thread
+                        import threading
+                        threading.Thread(
+                            target=_ci.inspect_url,
+                            args=(rec["tab_url"],), kwargs={"connect_now": True},
+                            daemon=True,
+                        ).start()
+        if use_geoip and geo_worker is not None:
+            from urllib.parse import urlsplit
+            for rec in records:
+                url = rec.get("tab_url") or ""
+                if not url.lower().startswith("https://"):
+                    continue
+                try:
+                    host = (urlsplit(url).hostname or "").lower()
+                except (ValueError, TypeError):
+                    continue
+                if not host:
+                    continue
+                ip = _geoip_engine.resolve_hostname(host)
+                if ip and geo_worker.submit(ip):
+                    pass  # queued; get visible on next poll
         browser_db.upsert_browser_urls(records)
         records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
         return records
@@ -287,6 +343,14 @@ def build_parser():
             "--no-cert-check", action="store_true",
             help="skip TLS certificate checks (overrides --cert-check)",
         )
+        parser.add_argument(
+            "--geo-check", action="store_true",
+            help="include GeoIP/ASN enrichment (opt-in; optional --geoip-provider maxmind)",
+        )
+        parser.add_argument(
+            "--no-geo-check", action="store_true",
+            help="skip GeoIP/ASN enrichment (overrides --geo-check)",
+        )
 
     s = sub.add_parser("scan", help="Run a single scan and print a table")
     s.add_argument("--all", action="store_true", help="include quiet LISTEN sockets")
@@ -307,6 +371,7 @@ def build_parser():
     h = sub.add_parser("history", help="Show recent history from SQLite")
     h.add_argument("--limit", type=int, default=50)
     h.add_argument("--level", choices=["LOW", "MEDIUM", "HIGH", "CRITICAL"], default=None)
+    h.add_argument("--country", help="filter by ISO-3166 country code (requires --geo-check data to be populated)")
     h.set_defaults(func=cmd_history)
 
     e = sub.add_parser("export", help="Export current scan to CSV/JSON/HTML")
@@ -343,6 +408,13 @@ def _cert_enabled(args):
     if not getattr(args, "cert_check", False):
         return False
     return not getattr(args, "no_cert_check", False)
+
+
+def _geoip_enabled(args):
+    """True when GeoIP/ASN enrichment is enabled for this run."""
+    if not getattr(args, "geo_check", False):
+        return False
+    return not getattr(args, "no_geo_check", False)
 
 
 def main():

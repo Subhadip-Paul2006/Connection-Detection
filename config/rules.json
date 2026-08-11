@@ -187,5 +187,24 @@
       "cert_weak_signature": 10,
       "no_https": 5
     }
+  },
+
+  "geoip": {
+    "_comment": "Stage 4: GeoIP + ASN enrichment. Default provider is ip-api.com (free, no key, HTTP-only free tier, NON-COMMERCIAL use only — see code comment in geoip_engine.py). MaxMind GeoLite2 is an optional fully-offline alternative: set provider='maxmind' plus the .mmdb paths yourself; never automated. Weights are intentionally modest — geography is weak evidence and should nudge, not dominate, a score.",
+    "provider": "ip-api",
+    "request_timeout_seconds": 4,
+    "rate_limit_per_minute": 40,
+    "cache_ttl_days": 30,
+    "expected_countries": ["IN"],
+    "high_risk_asns": ["as44477", "as9009", "as174", "bulletproof"],
+    "cdn_org_keywords": ["cloudflare", "fastly", "akamai", "cloudfront", "amazon", "google", "microsoft", "edgecast", "bunnycdn", "stackpath", "imperva"],
+    "datacenter_org_keywords": ["hosting", "datacenter", "server", "colo", "hetzner", "ovh", "digitalocean", "vultr", "linode", "contabo", "ionos"],
+    "weights": {
+      "unusual_country": 20,
+      "high_risk_hosting_asn": 25,
+      "datacenter_not_cdn": 10
+    },
+    "maxmind_city_mmdb": "",
+    "maxmind_asn_mmdb": ""
   }
 }

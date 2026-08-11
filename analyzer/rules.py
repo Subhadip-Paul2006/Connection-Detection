@@ -44,7 +44,7 @@ def _add(record, rule_key, weight, reason):
 
 
 def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
-            use_reputation=False, use_cert=False):
+            use_reputation=False, use_cert=False, use_geoip=False):
     """Run all rules over enriched, annotated records.
 
     Args:
@@ -74,6 +74,11 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
     if use_cert:
         from browser import cert_inspector as _ci
         _cert = _ci
+
+    # GeoIP / ASN enrichment (Stage 4) — opt-in via --geo-check; cached only
+    _geoip = None
+    if use_geoip:
+        from browser import geoip_engine as _geoip
 
     # Pre-compute external-connection count per pid for the burst signal.
     ext_per_pid = Counter()
@@ -185,6 +190,28 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
                     100, rec.get("risk_score", 0) + cached.get("risk_points", 0))
                 rec["cert"] = {k: cached.get(k) for k in
                                ("hostname", "cert_flags", "risk_points")}
+
+        # 9. GeoIP / ASN enrichment (cached-only, non-blocking)
+        #    Fires only when --geo-check is on and the remote IP is already
+        #    classified public by analyzer/ips. A cache miss produces nothing
+        #    this poll; the worker enqueues a lookup for next time. Weights
+        #    stay modest on purpose — geography is weak evidence.
+        if _geoip is not None and is_ext and rec.get("remote_ip"):
+            entry = _geoip.cache_get(rec["remote_ip"])
+            if entry is not None:
+                pts, reasons = _geoip.score_result(entry)
+                for r in reasons:
+                    rec["reasons"].append(r)
+                if pts:
+                    rec["rules_applied"]["geoip"] = rec["rules_applied"].get("geoip", 0) + pts
+                rec["geoip"] = {
+                    "country": entry.get("country", ""),
+                    "country_code": entry.get("country_code", ""),
+                    "asn": entry.get("asn", ""),
+                    "asn_org": entry.get("asn_org", ""),
+                    "cached": True,
+                }
+
         apply_score(rec)
 
     if hash_processes:

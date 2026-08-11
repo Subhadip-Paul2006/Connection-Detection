@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS history (
     status TEXT,
     risk_score INTEGER,
     risk_level TEXT,
-    signals TEXT
+    signals TEXT,
+    country TEXT DEFAULT '',
+    country_code TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_history_ts ON history(timestamp);
 CREATE INDEX IF NOT EXISTS idx_history_pid ON history(pid);
@@ -50,6 +52,15 @@ def _connect(db_path=None):
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    # Older DBs opened before the geoip columns existed get them on first read.
+    for stmt in (
+        "ALTER TABLE history ADD COLUMN country TEXT DEFAULT ''",
+        "ALTER TABLE history ADD COLUMN country_code TEXT DEFAULT ''",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     return conn
 
 
@@ -66,10 +77,12 @@ def save_scan(records, db_path=None):
     rows = []
     for rec in records:
         p = build_connection_payload(rec)
+        geo = rec.get("geoip") or {}
         rows.append((
             p["timestamp"], p["pid"], p["process_name"], p["exe_path"], p["sha256"],
             p["local_ip"], p["local_port"], p["remote_ip"], p["remote_port"],
             p["status"], p["risk_score"], p["risk_level"], "; ".join(p["reasons"]),
+            geo.get("country", ""), geo.get("country_code", ""),
         ))
     inserted = 0
     try:
@@ -80,8 +93,8 @@ def save_scan(records, db_path=None):
                 """INSERT INTO history
                    (timestamp, pid, process_name, exe_path, sha256,
                     local_ip, local_port, remote_ip, remote_port,
-                    status, risk_score, risk_level, signals)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    status, risk_score, risk_level, signals, country, country_code)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
             inserted = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else len(rows)
@@ -91,13 +104,20 @@ def save_scan(records, db_path=None):
     return inserted
 
 
-def fetch_history(limit=200, level=None, db_path=None):
-    """Fetch most recent history rows, optionally filtered by risk level."""
+def fetch_history(limit=200, level=None, country=None, db_path=None):
+    """Fetch most recent history rows, optionally filtered by risk level
+    and/or ISO-3166 country code (geo enrichment)."""
     sql = "SELECT * FROM history"
     params = []
+    clauses = []
     if level:
-        sql += " WHERE risk_level = ?"
+        clauses.append("risk_level = ?")
         params.append(level.upper())
+    if country:
+        clauses.append("country_code = ?")
+        params.append(str(country).upper())
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(int(limit))
     try:

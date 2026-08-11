@@ -295,25 +295,38 @@ def check_reputation_vt(url):
     return True, "vt_reputation", (reason, pts)
 
 
-def score_records(records, use_reputation=False):
-    """Score every detector record in-place. When use_reputation=True AND a
-    cached VirusTotal result exists, fold its points into risk_score and
-    append its signal to the existing reason list.
+def score_records(records, use_reputation=False, use_certs=False, use_geoip=False):
+    """Score every detector record in-place across the staged pipeline:
+      Stage 1 structural  -> always, offline
+      Stage 2 reputation  -> cached VT results only (use_reputation)
+      Stage 3 certificate -> cached TLS findings only (use_certs)
+      Stage 4 geo/ASN     -> cached geoip results only (use_geoip)
 
-    - Never blocks: only cached results are applied here. Live VT lookups are
-      enqueued separately by the caller.
-    - Transparent: every record gets a `signals` list either way.
+    - Never blocks: only cached Stage 2–4 results are applied here; live
+      lookups are enqueued separately by the caller and enrich later polls.
+    - Weight rationale: Stage 1/2/3 signals are structural/reputational and
+      score-confident; Stage 4 weights stay modest because geography alone is
+      weak evidence (see geoip_engine.score_result docstring).
+    - Transparent: every record keeps a full `signals` + `rules_applied` list.
     """
+    _geoip = None
+    if use_geoip:
+        from browser import geoip_engine as _geoip
+    _cert = None
+    if use_certs:
+        from browser import cert_inspector as _cert
+
     for rec in records:
         if not rec.get("tab_url"):
             rec.setdefault("risk_score", 0)
             rec.setdefault("signals", [])
             continue
-        scored = score_url(rec["tab_url"])                 # structural (Stage 1)
+        scored = score_url(rec["tab_url"])                 # Stage 1 — structural
         risk = scored["risk_score"]
         signals = list(scored["signals"])
         applied = dict(scored["rules_applied"])
-        if use_reputation:
+
+        if use_reputation:                                 # Stage 2 — cached VT
             from browser import reputation_engine
             cached = reputation_engine.cache_get(rec["tab_url"])
             if cached is not None:
@@ -324,6 +337,50 @@ def score_records(records, use_reputation=False):
                 risk = min(100, risk + pts)
                 rec["vt"] = {k: cached.get(k) for k in
                              ("vt_malicious", "vt_suspicious", "vt_total", "cached")}
+
+        if _cert is not None:                              # Stage 3 — cert cache
+            from urllib.parse import urlsplit as _us
+            host = ""
+            try:
+                host = (_us(rec["tab_url"]).hostname or "").lower()
+            except (ValueError, TypeError):
+                pass
+            if host:
+                cached = _cert.cache_get(host)
+                if cached is not None and not cached.get("unreachable"):
+                    for flag in cached.get("cert_flags", []):
+                        pts = int(settings().get("cert", {}).get("weights", {}).get(flag, 0))
+                        if pts:
+                            applied[flag] = applied.get(flag, 0) + pts
+                            signals.append(f"TLS: {flag} (+{pts})")
+                    risk = min(100, risk + int(cached.get("risk_points", 0)))
+                    rec["cert"] = {k: cached.get(k) for k in
+                                   ("hostname", "cert_flags", "risk_points")}
+
+        if _geoip is not None:                             # Stage 4 — geo cache
+            from urllib.parse import urlsplit as _us
+            host = ""
+            try:
+                host = (_us(rec["tab_url"]).hostname or "").lower()
+            except (ValueError, TypeError):
+                pass
+            if host:
+                entry = _geoip.cache_get(_geoip.resolve_hostname(host))
+                if entry is not None:
+                    pts, reasons = _geoip.score_result(entry, for_browser_url=True)
+                    if pts:
+                        applied["geoip"] = applied.get("geoip", 0) + pts
+                        signals.extend(f"{r} (+{pts})" if " +" not in r else r
+                                       for r in reasons)
+                        risk = min(100, risk + pts)
+                    rec["geoip"] = {
+                        "country": entry.get("country", ""),
+                        "country_code": entry.get("country_code", ""),
+                        "asn": entry.get("asn", ""),
+                        "asn_org": entry.get("asn_org", ""),
+                        "cached": True,
+                    }
+
         rec["risk_score"] = risk
         rec["signals"] = signals
         rec["rules_applied"] = applied
