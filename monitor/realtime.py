@@ -29,7 +29,7 @@ def _key(rec):
 
 
 def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_baseline=True,
-               use_reputation=False, use_cert=False, use_geoip=False):
+               use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False):
     """Start the polling monitor loop. Ctrl+C exits cleanly."""
     cfg = settings()
     if interval is None:
@@ -63,11 +63,20 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
             records = rules.analyze(
                 records, baseline=baseline, repeat_keys=repeat_keys,
                 use_reputation=use_reputation, use_cert=use_cert, use_geoip=use_geoip,
+                use_lineage=use_lineage,
             )
             records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
 
             current = {_key(r) for r in records}
-            database.save_scan(records)
+            ids = database.save_scan(records, return_ids=True)
+            if use_lineage:
+                from analyzer import lineage_analyzer
+                tuples = [(i, r) for i, r in zip(ids, records) if r.get("lineage")]
+                for i, r in tuples:
+                    lineage_analyzer.save_lineage(connection_id=i,
+                                                  lineage=r["lineage"],
+                                                  fires={},
+                                                  db_path=None)
 
             new_records = [r for r in records if _key(r) not in previous]
             # Alert on (a) brand-new keys, and (b) existing keys whose score
