@@ -14,7 +14,7 @@ log = logger.get_logger("pipeline")
 
 
 def run_scan(use_baseline=True, repeat_keys=None, hash_processes=True,
-             use_reputation=False, use_cert=False, use_geoip=False, args=None):
+             use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False, args=None):
     """Run one full scan. Returns analyzed records sorted by risk desc.
 
     Optional enrichments are opt-in per caller:
@@ -26,10 +26,11 @@ def run_scan(use_baseline=True, repeat_keys=None, hash_processes=True,
     """
     # Inline flag resolution so legacy callers keep working untouched.
     if args is not None:
-        from main import _reputation_enabled, _cert_enabled, _geoip_enabled
+        from main import _reputation_enabled, _cert_enabled, _geoip_enabled, _lineage_enabled
         use_reputation = use_reputation or _reputation_enabled(args)
         use_cert = use_cert or _cert_enabled(args)
         use_geoip = use_geoip or _geoip_enabled(args)
+        use_lineage = use_lineage or _lineage_enabled(args)
 
     store = getattr(run_scan, "_store", None)
     if store is None:
@@ -50,7 +51,8 @@ def run_scan(use_baseline=True, repeat_keys=None, hash_processes=True,
     baseline = database.load_baseline() if use_baseline else None
     records = rules.analyze(
         records, baseline=baseline, repeat_keys=repeat_keys, hash_processes=hash_processes,
-        use_reputation=use_reputation, use_cert=use_cert, use_geoip=use_geoip
+        use_reputation=use_reputation, use_cert=use_cert, use_geoip=use_geoip,
+        use_lineage=use_lineage,
     )
     records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
     return records
