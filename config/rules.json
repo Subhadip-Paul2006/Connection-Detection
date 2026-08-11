@@ -206,5 +206,23 @@
     },
     "maxmind_city_mmdb": "",
     "maxmind_asn_mmdb": ""
+  },
+
+  "lineage": {
+    "_comment": "Stage 5: process tree / parent-child lineage analysis. Runs locally via psutil — no external calls, no cache needed (point-in-time per scan). Rules:  office_spawned_shell, browser_spawned_suspicious_binary, unexpected_script_interpreter_parent, orphaned_or_reparented_process, unusual_chain_depth, cmdline_obfuscation_indicator. None of these alone is a verdict; additive contributions to the overall score.",
+    "max_chain_depth": 6,
+    "chain_depth_points": 10,
+    "allowed_script_parents": ["explorer.exe", "cmd.exe", "taskhostw.exe", "svchost.exe", "conhost.exe", "taskmgr.exe", "code.exe", "notepad.exe", "devenv.exe"],
+    "suspicious_location_keywords": ["\\appdata\\local\\temp\\", "\\downloads\\", "\\temp\\", "\\users\\public\\"],
+    "shell_and_script_hosts": ["cmd.exe", "powershell.exe", "powershellise.exe", "wscript.exe", "cscript.exe", "mshta.exe", "wmic.exe", "conhost.exe"],
+    "office_processes": ["winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "msaccess.exe", "mspub.exe", "visio.exe", "onenote.exe"],
+    "weights": {
+      "office_spawned_shell": 45,
+      "browser_spawned_suspicious_binary": 35,
+      "unexpected_script_interpreter_parent": 25,
+      "orphaned_or_reparented_process": 20,
+      "unusual_chain_depth": 10,
+      "cmdline_obfuscation_indicator": 30
+    }
   }
 }
