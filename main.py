@@ -24,7 +24,7 @@ from rich.table import Table
 
 from utils import logger
 from utils.config_loader import settings
-from utils.formatting import print_banner, render_connections_table, render_browser_activity_panel
+from utils.formatting import print_banner, render_connections_table, render_browser_activity_panel, render_persistence_table
 
 console = Console()
 log = logger.get_logger("main")
@@ -345,6 +345,48 @@ def cmd_browsers(args):
     return 0
 
 
+def cmd_persistence(args):
+    """Phase 6: persistence / autorun / registry scan. Fully local, offline.
+
+    Enumerates Run keys (HKCU + both HKLM hives incl. WOW6432Node), Startup
+    folders (with .lnk resolution via WScript.Shell COM), Scheduled Tasks via
+    Task Scheduler COM, and — only with --services — services outside trusted
+    directories. Every entry is scored by local heuristics and cross-referenced
+    against processes Feluda already flagged via the connection-scan path (or
+    'history' rows when --cross-reference-history is off).
+
+    By default it writes one persistence snapshot row per entry scanned. Run
+    -v for the verbose table containing raw command text (potentially noisy).
+    """
+    from persistence_scanner import scan as persistence_scan
+    from browser import browser_db  # noqa: F401 — keeps package imported for schema init
+
+    entries, errors = persistence_scan(include_services=args.services)
+    summary = (
+        f"scanned {len(entries)} entries "
+        f"({sum(1 for e in entries if e.get('source_type') == 'registry_run')} registry, "
+        f"{sum(1 for e in entries if e.get('source_type') == 'startup_folder')} startup, "
+        f"{sum(1 for e in entries if e.get('source_type') == 'scheduled_task')} tasks"
+        + (", services=" + str(sum(1 for e in entries if e.get('source_type') == 'service')) if args.services else "")
+        + f") — {sum(1 for e in entries if e.get('risk_points', 0) > 0)} with signals"
+    )
+    console.print(summary)
+    if errors:
+        console.print(
+            "[yellow]Skipped surfaces:[/yellow] " +
+            "; ".join(e.get("raw_command", "") for e in errors)
+        )
+    # default: nonzero scores first; the full list is too noisy in a terminal
+    filtered = entries
+    if not args.all:
+        filtered = [e for e in entries if e.get("risk_points", 0) > 0]
+    if filtered:
+        console.print(render_persistence_table(
+            filtered if args.all else filtered[:args.limit]))
+    else:
+        console.print("[green]No persistence entries triggered any rules.[/green]")
+
+
 def cmd_export(args):
     from monitor.pipeline import run_scan
     from reports.csv_export import export_csv
@@ -435,6 +477,13 @@ def build_parser():
             help="skip process-tree lineage scoring (overrides --lineage-check)",
         )
 
+    def _add_persistence_flags(parser):
+        """Phase 6: persistence cross-reference + include-in-export flags."""
+        parser.add_argument(
+            "--persistence-check", action="store_true",
+            help="periodically re-scan persistence entries during monitor and cross-reference against active connections",
+        )
+
     s = sub.add_parser("scan", help="Run a single scan and print a table")
     s.add_argument("--all", action="store_true", help="include quiet LISTEN sockets")
     s.add_argument("--no-baseline", action="store_true", help="skip baseline comparison")
@@ -446,6 +495,7 @@ def build_parser():
     m.add_argument("--once", action="store_true", help="run exactly one scan and exit")
     m.add_argument("--no-baseline", action="store_true", help="skip baseline comparison")
     _add_reputation_flags(m)
+    _add_persistence_flags(m)
     m.set_defaults(func=cmd_monitor)
 
     b = sub.add_parser("baseline", help="Learn normal process->remote-port patterns now")
@@ -457,12 +507,16 @@ def build_parser():
     h.add_argument("--country", help="filter by ISO-3166 country code (requires --geo-check data to be populated)")
     h.add_argument("--show-lineage", type=int, default=None,
                    help="show stored process lineage details for a past scan row (history.id)")
+    h.add_argument("--persistence", action="store_true",
+                   help="show past persistence snapshots instead of connection history")
     h.set_defaults(func=cmd_history)
 
     e = sub.add_parser("export", help="Export current scan to CSV/JSON/HTML")
     e.add_argument("--format", choices=["csv", "json", "html", "all"], default="all")
     e.add_argument("--no-baseline", action="store_true")
     e.add_argument("--scan-browsers", action="store_true", help="also include Browser URL risk section")
+    e.add_argument("--include-persistence", action="store_true",
+                   help="run and include a persistence/autorun scan section in the export (fully local)")
     _add_reputation_flags(e)
     e.set_defaults(func=cmd_export)
 
@@ -471,6 +525,16 @@ def build_parser():
     br.add_argument("--interval", type=int, default=None, help="poll seconds for --live (default from config)")
     _add_reputation_flags(br)
     br.set_defaults(func=cmd_browsers)
+
+    pe = sub.add_parser("persistence",
+                        help="Scan Windows persistence/autorun locations (registry Run keys, Startup folders, Scheduled Tasks, optional services)")
+    pe.add_argument("--services", action="store_true",
+                    help="also scan Windows services for untrusted binary paths (stretch goal; opt-in)")
+    pe.add_argument("--all", action="store_true",
+                    help="show every enumerated entry, not just ones with risk signals")
+    pe.add_argument("--limit", type=int, default=80,
+                    help="row cap when --all is passed")
+    pe.set_defaults(func=cmd_persistence)
 
     return p
 
