@@ -97,12 +97,13 @@ graph TB
 - **Remote-IP classification**: `PRIVATE`, `LOOPBACK`, `LINK-LOCAL`, `PUBLIC`, `MULTICAST`.
 - **Port intelligence**: Config-driven well-known vs. unusual remote service mapping.
 - **Process path analysis & hashing**: Detects execution from `Temp`, `Downloads`, `Users\Public`; computes SHA-256 for notable executables.
-- **Browser & URL threat detection**: Supports **Chrome**, **Brave**, **Edge**, **Arc**, and **Firefox** (via `recovery.jsonlz4` session parsing & fallback `places.sqlite` extraction).
+- **Persistence & Autorun scanning**: Enumerates Windows **Run / RunOnce registry keys**, **Startup folder shortcuts** (resolved via WScript.Shell COM), **Task Scheduler COM jobs**, and optional **Windows services**, cross-referencing against active network socket processes.
 - **Multi-Stage Opt-In Enrichment**:
   - VirusTotal IP & URL reputation checking (`--reputation-check`).
   - HTTPS TLS Certificate inspection (`--cert-check`).
   - GeoIP & ASN hosting provider classification (`--geo-check`).
   - Parent-child process lineage tree walking (`--lineage-check`).
+  - Persistence & autorun cross-referencing (`--persistence-check`).
 - **Forensic Lineage Drill-Down**: Detailed parent process chain inspection for historical scans (`--show-lineage <id>`).
 - **SQLite history & baseline learning**: Logs snapshots to `database/history.db` and learns `process:port` normal behavior.
 - **Multi-format export**: Comprehensive CSV, JSON, and dark-themed self-contained HTML audit reports.
@@ -136,7 +137,11 @@ python main.py scan
 python main.py scan --reputation-check --cert-check --geo-check --lineage-check
 
 # Real-time background monitoring guard
-python main.py monitor --interval 5
+python main.py monitor --interval 5 --persistence-check
+
+# Windows autorun & persistence scan (Registry, Startup, Tasks, Services)
+python main.py persistence
+python main.py persistence --services --all
 
 # Browser & URL threat detection scan / live watch mode
 python main.py browsers
@@ -178,7 +183,8 @@ All thresholds, weights, and rules live in [`config/rules.json`](config/rules.js
 
 ```
 Feluda/
-├── main.py                     # CLI entry: scan / monitor / baseline / history / export / browsers
+├── main.py                     # CLI entry: scan / monitor / baseline / history / export / browsers / persistence
+├── persistence_scanner.py       # Phase 6: Registry Run keys, Startup shortcuts, Task Scheduler & service scanner
 ├── collector/
 │   ├── connections.py          # psutil.net_connections() + ConnectionStore repeat tracker
 │   ├── processes.py            # PID → process metadata enrichment
