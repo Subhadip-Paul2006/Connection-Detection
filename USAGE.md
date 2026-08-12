@@ -163,14 +163,15 @@ python main.py [--no-banner] <command> [command-flags]
   - `--interval N`: Sets the polling loop delay in seconds (default: `5` seconds).
   - `--once`: Executes a single monitoring tick (including database persistence and alert evaluation) and exits cleanly.
   - `--no-baseline`: Disables baseline comparison during monitoring ticks.
+  - `--persistence-check`: Periodically scans Windows persistence/autorun entries and cross-references them against active connection processes.
 
 * **Practical Examples**:
   ```powershell
   # Continuous real-time monitor with default 5s polling
   python main.py monitor
 
-  # Real-time monitor polling every 15 seconds
-  python main.py monitor --interval 15
+  # Real-time monitor polling every 15 seconds with persistence cross-referencing
+  python main.py monitor --interval 15 --persistence-check
 
   # One-shot test iteration of the monitor engine
   python main.py monitor --once
@@ -178,7 +179,32 @@ python main.py [--no-banner] <command> [command-flags]
 
 ---
 
-#### 4. `baseline` — Learn Normal Process Connection Baseline
+#### 4. `persistence` — Windows Autorun & Persistence Location Scanner
+
+**Purpose**: Scans Windows autorun & persistence mechanisms (Registry `Run` / `RunOnce` keys across HKCU and HKLM hives including WOW6432Node, Startup folders with `.lnk` resolution via `WScript.Shell` COM, Task Scheduler COM jobs, and optional untrusted Windows services). Scores entries offline and cross-references binaries against active process connections.
+
+* **Usage Syntax**:
+  ```powershell
+  python main.py persistence [flags]
+  ```
+
+* **Command Flags**:
+  - `--services`: Enables opt-in scan of Windows services whose binary executable resides outside trusted system paths.
+  - `--all`: Displays every enumerated entry (by default, only entries triggering risk signals are shown).
+  - `--limit N`: Row cap when `--all` is passed (default: `80`).
+
+* **Practical Examples**:
+  ```powershell
+  # Scan persistence locations for entries with risk signals
+  python main.py persistence
+
+  # Include Windows service path scanning and show all enumerated entries
+  python main.py persistence --services --all
+  ```
+
+---
+
+#### 5. `baseline` — Learn Normal Process Connection Baseline
 
 **Purpose**: Captures a snapshot of currently active external network connections and stores normal `process_name:remote_port` pairs into the `baseline` table in SQLite (`database/history.db`). In subsequent scans or monitor runs, any external connection matching an unlearned pattern is assigned a **+15 Outside Baseline** risk signal.
 
