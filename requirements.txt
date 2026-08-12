@@ -2,3 +2,4 @@ psutil>=5.9
 rich>=13.0
 lz4>=4.0        # Firefox live-tab extraction: decompresses sessionstore-backups/recovery.jsonlz4 (mozLz4)
 pywin32>=300    # Persistence scanning: .lnk resolution (WScript.Shell COM) + Task Scheduler COM
+httpx>=0.27   # Phase 7: Telegram alerter -- async HTTP client for Bot API sendMessage

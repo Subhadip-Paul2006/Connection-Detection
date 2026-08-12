@@ -2,7 +2,11 @@
 
 Loop: collect -> diff against previous scan -> analyze -> persist -> alert on
 new/changed MEDIUM+ entries -> sleep on a config-driven interval (no tight
-loop). All alerts list explicit signal reasons — never verdicts.
+loop). All alerts list explicit signal reasons -- never verdicts.
+
+Phase 7 addition: optional ``--alert-telegram`` push notifications routed
+through ``telegram_alerter.TelegramAlerter``.  The alerter runs in a daemon
+thread and is fully non-blocking from the poll loop's perspective.
 """
 
 import time
@@ -30,8 +34,20 @@ def _key(rec):
 
 def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_baseline=True,
                use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False,
-               persistence_check=False):
-    """Start the polling monitor loop. Ctrl+C exits cleanly."""
+               persistence_check=False, alert_telegram=False, test_alert=False):
+    """Start the polling monitor loop. Ctrl+C exits cleanly.
+
+    Parameters
+    ----------
+    alert_telegram : bool
+        If True, load and start the Telegram alerter (requires env vars
+        FELUDA_BOT_TELEGRAM_TOKEN and FELUDA_TELEGRAM_CHAT_ID).  Missing env
+        vars print a one-line error and continue without alerting -- monitor
+        itself never crashes over a bad Telegram config.
+    test_alert : bool
+        If True, send a single sample Telegram message and return immediately.
+        Does not start the polling loop.
+    """
     cfg = settings()
     if interval is None:
         interval = cfg.get("monitor", {}).get("poll_interval_seconds", 5)
@@ -40,6 +56,37 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
     min_repeat = cfg.get("thresholds", {}).get("repeated_connection_min_scans", 3)
     persistence_interval = int(cfg.get("persistence", {}).get("persistence_check_polls", 12))
 
+    tg_cfg = cfg.get("telegram", {})
+    tg_threshold  = int(tg_cfg.get("alert_threshold", 50))
+    tg_cooldown   = int(tg_cfg.get("cooldown_seconds", 1800))
+
+    # ------------------------------------------------------------------ Telegram setup
+    alerter = None
+    if alert_telegram or test_alert:
+        from telegram_alerter import TelegramAlerter, send_test_alert_sync
+        if test_alert:
+            ok = send_test_alert_sync()
+            if ok:
+                console.print("[green]Test alert sent successfully. Check your Telegram.[/green]")
+            else:
+                console.print("[red]Test alert failed. Check credentials and logs.[/red]")
+            return  # don't start the polling loop for --test-alert
+
+        alerter = TelegramAlerter(
+            cooldown_seconds=tg_cooldown,
+            alert_threshold=tg_threshold,
+        )
+        if alerter.configure():
+            alerter.start()
+            console.print(
+                f"[bold cyan]Telegram alerts enabled[/bold cyan] "
+                f"(threshold={tg_threshold}, cooldown={tg_cooldown}s)"
+            )
+        else:
+            # configure() already printed the per-missing-var error; continue without alerting
+            alerter = None
+
+    # ------------------------------------------------------------------ polling loop
     store = conn_collector.ConnectionStore()
     previous = set()           # connection keys seen last scan
     prev_below = {}            # key -> bool, was this key below alert_min last scan?
@@ -47,7 +94,7 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
     last_persist_scan_num = -1
 
     console.print(
-        f"[bold cyan]Feluda monitor[/bold cyan] — polling every {interval}s "
+        f"[bold cyan]Feluda monitor[/bold cyan] -- polling every {interval}s "
         f"(alert threshold: score >= {alert_min}). Ctrl+C to stop."
     )
 
@@ -83,7 +130,7 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
 
             new_records = [r for r in records if _key(r) not in previous]
             # Alert on (a) brand-new keys, and (b) existing keys whose score
-            # has just CROSSED the alert threshold since the previous scan —
+            # has just CROSSED the alert threshold since the previous scan --
             # otherwise `repeated_connection` (+10) pushing a key from 20 to
             # 30 would never surface.
             hits = [
@@ -101,11 +148,14 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
 
             for rec in hits:
                 # High-scoring new LISTENers are logged even though they aren't
-                # popups — otherwise a fresh listener (a classic backdoor
+                # popups -- otherwise a fresh listener (a classic backdoor
                 # indicator) would vanish silently from interactive monitoring.
                 logger.log_detection(rec)
                 if rec.get("status") in ALERT_STATUSES:
                     console.print(render_alert_panel(rec))
+                # Phase 7: Telegram push -- fire-and-forget, never blocks loop
+                if alerter is not None:
+                    alerter.enqueue_connection_alert(rec)
 
             if show_table and once:
                 console.print(render_connections_table(records[:50], title=f"Scan {scan_num} snapshot"))
@@ -127,6 +177,10 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
                                   f"flagged {len(flagged)} persistence entries")
                     console.print(render_persistence_table(flagged[:20], errors=p_errors,
                                                            title=f"Persistence matches (@scan {scan_num})"))
+                    # Phase 7: Telegram alerts for persistence cross-reference matches
+                    if alerter is not None:
+                        for entry in flagged:
+                            alerter.enqueue_persistence_alert(entry)
                 else:
                     console.print(f"[dim]persistence check @{scan_num}: no new matches[/dim]")
                 last_persist_scan_num = scan_num
@@ -139,4 +193,8 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
     except KeyboardInterrupt:
         console.line()
         console.print("[bold]Monitor stopped by user.[/bold]")
+    finally:
+        # Clean shutdown of the background sender thread
+        if alerter is not None:
+            alerter.stop()
     log.info("monitor exited after %d scans", scan_num)
