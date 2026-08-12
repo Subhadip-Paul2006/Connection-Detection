@@ -22,9 +22,16 @@ BROWSER_FIELDS = [
 ]
 
 
-def export_csv(records, path, browser_records=None):
+PERSISTENCE_FIELDS = [
+    "source_type", "location_detail", "value_name", "raw_command",
+    "resolved_exe_path", "exists_on_disk", "signed_state",
+    "triggered_signals", "risk_points", "matched_connection_id", "scanned_at",
+]
+
+
+def export_csv(records, path, browser_records=None, persistence_records=None):
     """Original signature: export_csv(records, path).
-    Extend with browser_records to also append a Browser URL section."""
+    Optional browser_records / persistence_records append their own sections."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -44,6 +51,15 @@ def export_csv(records, path, browser_records=None):
                     row["signals"] = "; ".join(row.get("signals") or [])
                     row["is_live_tab"] = bool(row.get("is_live_tab"))
                     bwriter.writerow({k: row.get(k, "") for k in BROWSER_FIELDS})
+            if persistence_records:
+                fh.write("\n# Persistence / Autorun entries (Feluda persistence module)\n")
+                pwriter = csv.DictWriter(fh, fieldnames=PERSISTENCE_FIELDS)
+                pwriter.writeheader()
+                for e in persistence_records:
+                    row = dict(e)
+                    row["triggered_signals"] = "; ".join(row.get("triggered_signals") or [])
+                    row["exists_on_disk"] = bool(row.get("exists_on_disk"))
+                    pwriter.writerow({k: row.get(k, "") for k in PERSISTENCE_FIELDS})
         log.info("CSV export wrote %d rows to %s", len(records), path)
     except OSError as exc:
         log.error("CSV export failed: %s", exc)

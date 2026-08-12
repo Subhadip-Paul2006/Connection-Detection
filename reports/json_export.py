@@ -9,16 +9,17 @@ from utils.formatting import build_connection_payload
 log = logger.get_logger("reports.json")
 
 
-def export_json(records, path, browser_records=None):
+def export_json(records, path, browser_records=None, persistence_records=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if browser_records:
-        payload = {
-            "connections": [build_connection_payload(r) for r in records],
-            "browser_urls": browser_records,
-        }
-    else:
+    if not (browser_records or persistence_records):
         payload = [build_connection_payload(r) for r in records]
+    else:
+        payload = {"connections": [build_connection_payload(r) for r in records]}
+        if browser_records:
+            payload["browser_urls"] = browser_records
+        if persistence_records:
+            payload["persistence_entries"] = persistence_records
     try:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, default=str)

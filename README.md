@@ -155,7 +155,7 @@ python main.py history --limit 50 --level HIGH
 python main.py history --show-lineage 42
 
 # Export audit findings to CSV, JSON, and self-contained HTML report
-python main.py export --format all --scan-browsers
+python main.py export --format all --scan-browsers --scan-persistence
 ```
 
 Set UTF-8 encoding in Windows PowerShell for proper Rich table rendering:

@@ -300,7 +300,42 @@ def _render_browser_urls_html(url_rows):
     return "\n".join(rows)
 
 
-def render_html_report(records, summary=None, title="Feluda Audit Report", browser_url_rows=None):
+def _render_persistence_html(rows):
+    """Build the Persistence / Autorun section body for the HTML report.
+
+    `rows` come from persistence_scanner.fetch_entries(). All values are
+    HTML-escaped; command strings and signals are truncated for readability.
+    """
+    if not rows:
+        return "<tr><td colspan='7'><em>No persistence entries recorded.</em></td></tr>"
+    out_lines = []
+    for e in rows:
+        score = int(e.get("risk_points", 0))
+        lvl = "low" if score == 0 else ("medium" if score < 40 else "high")
+        badge = f'<span class="badge {lvl}">{score}</span>'
+        signals_raw = e.get("triggered_signals", "")
+        try:
+            sig_list = json.loads(signals_raw) if isinstance(signals_raw, str) else list(signals_raw)
+        except Exception:
+            sig_list = [safe_text(signals_raw)]
+        signals = "; ".join(html.escape(safe_text(s)) for s in sig_list)
+        target = html.escape(safe_text(e.get("resolved_exe_path", "")))
+        out_lines.append(
+            f"<tr>"
+            f"<td>{html.escape(safe_text(e.get('source_type', '')))}</td>"
+            f"<td>{html.escape(safe_text(e.get('location_detail', ''))[:60])}</td>"
+            f"<td>{target[:80]}</td>"
+            f"<td>{'yes' if e.get('exists_on_disk') else 'no' if target else '-'}</td>"
+            f"<td>{html.escape(safe_text(e.get('signed_state', '-')))}</td>"
+            f"<td>{badge}</td>"
+            f"<td>{signals[:160]}</td>"
+            f"</tr>"
+        )
+    return "\n".join(out_lines)
+
+
+def render_html_report(records, summary=None, title="Feluda Audit Report", browser_url_rows=None,
+                       persistence_rows=None):
     """Return a self-contained HTML audit report string."""
     rows = []
     for rec in records:
@@ -387,6 +422,15 @@ All flags are <strong>signals with reasons</strong>, not malware verdicts.</p>
 </tr></thead>
 <tbody>
 {_render_browser_urls_html(browser_url_rows)}
+</tbody>
+</table>
+<h2>Persistence / Autorun Entries</h2>
+<table>
+<thead><tr>
+<th>Source</th><th>Location / Name</th><th>Target</th><th>On disk</th><th>Signed</th><th>Risk</th><th>Signals</th>
+</tr></thead>
+<tbody>
+{_render_persistence_html(persistence_rows)}
 </tbody>
 </table>
 </body>

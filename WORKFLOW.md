@@ -328,9 +328,32 @@ run_scan(...)                          ← fresh analyzed records
    ├─ format in (csv , all) → reports.csv_export.export_csv  → exports/connections.csv
    ├─ format in (json, all) → reports.json_export.export_json → exports/connections.json
    └─ format in (html, all) → reports.html_export.export_html → exports/audit_report.html
-                                  (summary = {total, external, MEDIUM+})
+                                  (summary = {total, external, MEDIUM+}, browser_url_rows, persistence_rows)
    ▼
 print each written path
+```
+
+### 6.6 `persistence`
+
+```
+persistence --services? --all? --limit 80
+   │
+   ▼
+persistence_scanner.scan(include_services, save=True)
+   │
+   ├─ enumerate_run_keys()         ──▶ HKCU/HKLM Run & RunOnce keys
+   ├─ enumerate_startup_folders()  ──▶ Startup folder .lnk targets (WScript.Shell COM)
+   ├─ enumerate_scheduled_tasks() ──▶ Task Scheduler COM root folder walk
+   └─ enumerate_services()        ──▶ psutil win_services outside trusted dirs (if --services)
+   │
+   ▼
+score_entry() + cross_reference() against active connection exes
+   │
+   ▼
+save_entries() sqlite persistence to database/history.db
+   │
+   ▼
+utils.formatting.render_persistence_table()
 ```
 
 ---

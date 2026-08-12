@@ -29,7 +29,8 @@ def _key(rec):
 
 
 def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_baseline=True,
-               use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False):
+               use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False,
+               persistence_check=False):
     """Start the polling monitor loop. Ctrl+C exits cleanly."""
     cfg = settings()
     if interval is None:
@@ -37,11 +38,13 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
     if alert_min is None:
         alert_min = cfg.get("thresholds", {}).get("alert_min_risk_score", 25)
     min_repeat = cfg.get("thresholds", {}).get("repeated_connection_min_scans", 3)
+    persistence_interval = int(cfg.get("persistence", {}).get("persistence_check_polls", 12))
 
     store = conn_collector.ConnectionStore()
     previous = set()           # connection keys seen last scan
     prev_below = {}            # key -> bool, was this key below alert_min last scan?
     scan_num = 0
+    last_persist_scan_num = -1
 
     console.print(
         f"[bold cyan]Feluda monitor[/bold cyan] — polling every {interval}s "
@@ -106,6 +109,27 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
 
             if show_table and once:
                 console.print(render_connections_table(records[:50], title=f"Scan {scan_num} snapshot"))
+
+            # --persistence-check: re-scan autorun locations every N poll cycles,
+            # cross-referenced against the currently-active (this-run) connection exes.
+            if persistence_check and (scan_num - last_persist_scan_num) >= max(1, persistence_interval):
+                import persistence_scanner as _ps
+                active_exes = sorted({
+                    r.get("exe_path", "").lower()
+                    for r in records
+                    if r.get("is_external") and r.get("risk_score", 0) > 0 and r.get("exe_path")
+                })
+                p_entries, p_errors = _ps.scan(include_services=False, active_exes=active_exes, save=True)
+                flagged = [e for e in p_entries if e.get("matched_connection_id") or e.get("risk_points", 0) > 0]
+                if flagged:
+                    from utils.formatting import render_persistence_table
+                    console.print(f"[bold yellow]Persistence check[scan {scan_num}][/bold yellow] "
+                                  f"flagged {len(flagged)} persistence entries")
+                    console.print(render_persistence_table(flagged[:20], errors=p_errors,
+                                                           title=f"Persistence matches (@scan {scan_num})"))
+                else:
+                    console.print(f"[dim]persistence check @{scan_num}: no new matches[/dim]")
+                last_persist_scan_num = scan_num
 
             prev_below = {_key(r): r.get("risk_score", 0) < alert_min for r in records}
             previous = current
