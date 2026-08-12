@@ -1,4 +1,4 @@
-﻿"""Feluda â€” defensive network connection monitor & triage CLI.
+"""Feluda â€” defensive network connection monitor & triage CLI.
 
 A monitoring/triage tool, not an antivirus. Every flag is a *signal* with an
 explicit reason list â€” never a definitive threat determination.
@@ -137,6 +137,8 @@ def cmd_monitor(args):
         use_geoip=_geoip_enabled(args),
         use_lineage=_lineage_enabled(args),
         persistence_check=getattr(args, "persistence_check", False),
+        alert_telegram=getattr(args, "alert_telegram", False),
+        test_alert=getattr(args, "test_alert", False),
     )
     return 0
 
@@ -524,6 +526,15 @@ def build_parser():
     m.add_argument("--no-baseline", action="store_true", help="skip baseline comparison")
     _add_reputation_flags(m)
     _add_persistence_flags(m)
+    m.add_argument(
+        "--alert-telegram", action="store_true",
+        help="send Telegram push notifications for findings at/above alert_threshold "
+             "(needs FELUDA_BOT_TELEGRAM_TOKEN + FELUDA_TELEGRAM_CHAT_ID env vars)",
+    )
+    m.add_argument(
+        "--test-alert", action="store_true",
+        help="send a single sample Telegram message to verify credentials, then exit",
+    )
     m.set_defaults(func=cmd_monitor)
 
     b = sub.add_parser("baseline", help="Learn normal process->remote-port patterns now")

@@ -100,7 +100,8 @@
     "multiple_external_connections_min": 3,
     "repeated_connection_min_scans": 3,
     "hash_min_risk_score": 25,
-    "alert_min_risk_score": 25
+    "alert_min_risk_score": 25,
+    "alert_threshold": 50
   },
 
   "risk_bands": {
@@ -108,6 +109,13 @@
     "MEDIUM": [25, 49],
     "HIGH": [50, 74],
     "CRITICAL": [75, 100]
+  },
+
+
+  "telegram": {
+    "_comment": "Phase 7: Telegram push alerting. Credentials from env vars FELUDA_BOT_TELEGRAM_TOKEN and FELUDA_TELEGRAM_CHAT_ID -- never hardcoded.",
+    "alert_threshold": 50,
+    "cooldown_seconds": 1800
   },
 
   "monitor": {
