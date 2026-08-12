@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -135,6 +136,7 @@ def cmd_monitor(args):
         use_cert=_cert_enabled(args),
         use_geoip=_geoip_enabled(args),
         use_lineage=_lineage_enabled(args),
+        persistence_check=getattr(args, "persistence_check", False),
     )
     return 0
 
@@ -171,6 +173,19 @@ def cmd_history(args):
                           "Run with --lineage-check to capture chains.[/yellow]")
             return 0
         _print_lineage_detail(rec)
+        return 0
+
+    # --persistence: show past persistence scan snapshots.
+    if getattr(args, "persistence", False):
+        from persistence_scanner import fetch_entries
+        rows_p = fetch_entries(limit=args.limit)
+        if not rows_p:
+            console.print("[yellow]No persistence snapshots yet. Run 'python main.py persistence' first.[/yellow]")
+            return 0
+        console.print(render_persistence_table(
+            [{**r, "triggered_signals": json.loads(r.get("triggered_signals") or "[]")}
+             for r in rows_p],
+            title=f"Persistence snapshots (latest {len(rows_p)})"))
         return 0
 
     rows = database.fetch_history(
@@ -418,14 +433,27 @@ def cmd_export(args):
                 vq.submit_url(rec.get("tab_url", ""))
             console.print(f"[dim]{vq.quota_status()}[/dim]")
 
+    persistence_records = []
+    if getattr(args, "include_persistence", False):
+        import persistence_scanner as _ps
+        console.print("[bold cyan]Also running a persistence scan (registry/startup/tasks) ...[/bold cyan]")
+        persistence_records, _perr = _ps.scan(include_services=False, save=True)
+        summary["persistence entries"] = len(persistence_records)
+        summary["persistence flagged"] = sum(1 for e in persistence_records if e.get("risk_points", 0) > 0)
+
     written = []
     if args.format in ("csv", "all"):
-        written.append(export_csv(records, outdir / "connections.csv", browser_records=browser_records))
+        written.append(export_csv(records, outdir / "connections.csv",
+                                  browser_records=browser_records,
+                                  persistence_records=persistence_records))
     if args.format in ("json", "all"):
-        written.append(export_json(records, outdir / "connections.json", browser_records=browser_records))
+        written.append(export_json(records, outdir / "connections.json",
+                                   browser_records=browser_records,
+                                   persistence_records=persistence_records))
     if args.format in ("html", "all"):
         written.append(export_html(records, outdir / "audit_report.html", summary=summary,
-                                   browser_url_rows=browser_records))
+                                   browser_url_rows=browser_records,
+                                   persistence_rows=persistence_records))
     for p in written:
         console.print(f"  [green]wrote[/green] {p}")
     return 0
