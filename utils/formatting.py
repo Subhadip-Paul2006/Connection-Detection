@@ -167,6 +167,49 @@ def render_alert_panel(rec):
     )
 
 
+def render_persistence_table(entries, errors=None, title="Persistence / Autorun Entries"):
+    """Render persistence scan results. Rows colored green=0, yellow 1-39, red >=40.
+    `errors` are permission/absence notes rendered at the bottom as dim lines —
+    Feluda policy: never silently omit a skipped surface."""
+    from rich.table import Table
+    from rich.text import Text as _Text
+
+    table = Table(title=title, expand=True)
+    table.add_column("Source", no_wrap=True)
+    table.add_column("Location / Name", overflow="fold")
+    table.add_column("Target", overflow="fold")
+    table.add_column("On disk", no_wrap=True)
+    table.add_column("Signed", no_wrap=True)
+    table.add_column("Risk", justify="right", no_wrap=True)
+    table.add_column("Signals", overflow="fold")
+
+    def _color(score):
+        return "bold red" if score >= 40 else ("yellow" if score >= 1 else "green")
+
+    for e in entries:
+        score = int(e.get("risk_points", 0))
+        sig = "; ".join(e.get("triggered_signals") or [])
+        table.add_row(
+            _Text(str(e.get("source_type", ""))),
+            _Text(str(e.get("location_detail", ""))[:60]),
+            _Text(str(e.get("resolved_exe_path", ""))[:70]),
+            _Text("yes" if e.get("exists_on_disk") else "no" if e.get("resolved_exe_path") else "-"),
+            _Text(str(e.get("signed_state", "-"))),
+            f"[{_color(score)}]{score}[/{_color(score)}]",
+            _Text(sig[:120]),
+        )
+    if errors:
+        for e in errors:
+            table.add_row(
+                _Text("note"),
+                _Text(str(e.get("location_detail", ""))[:60]),
+                _Text(str(e.get("raw_command", ""))[:70]),
+                _Text("-"), _Text("-"), _Text("-"),
+                _Text(str(e.get("raw_command", "")), style="dim"),
+            )
+    return table
+
+
 # ---------------------------------------------------------------------------
 # HTML export
 # ---------------------------------------------------------------------------
