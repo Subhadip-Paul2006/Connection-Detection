@@ -168,6 +168,8 @@ def cmd_monitor(args):
         persistence_check=getattr(args, "persistence_check", False),
         alert_telegram=getattr(args, "alert_telegram", False),
         test_alert=getattr(args, "test_alert", False),
+        telegram_control=getattr(args, "telegram_control", False),
+        args=args,
     )
     return 0
 
@@ -576,6 +578,10 @@ def build_parser():
         "--alert-telegram", action="store_true",
         help="send Telegram push notifications for findings at/above alert_threshold "
              "(needs FELUDA_BOT_TELEGRAM_TOKEN + FELUDA_TELEGRAM_CHAT_ID env vars)",
+    )
+    m.add_argument(
+        "--telegram-control", action="store_true",
+        help="enable two-way Telegram remote control loop (listens for /high, /medium, /low, /stop, /status)",
     )
     m.add_argument(
         "--test-alert", action="store_true",
