@@ -372,6 +372,7 @@ def register_bot_commands(token: str) -> bool:
             {"command": "low", "description": "Start scan — alert on ALL findings (score >= 0)"},
             {"command": "pause", "description": "Pause active scan loop (listener remains connected)"},
             {"command": "stop", "description": "End session completely (stops scan & disconnects)"},
+            {"command": "chains", "description": "Show correlated attack chains"},
             {"command": "status", "description": "Show session status, uptime & finding counts"},
             {"command": "help", "description": "Show command menu & control buttons"},
         ]
@@ -399,10 +400,11 @@ def build_inline_keyboard() -> dict:
                 {"text": "⏸ Pause", "callback_data": "cmd_pause"},
             ],
             [
+                {"text": "🔗 Attack Chains", "callback_data": "cmd_chains"},
                 {"text": "📊 Status", "callback_data": "cmd_status"},
-                {"text": "🛑 End Session", "callback_data": "cmd_stop"},
             ],
             [
+                {"text": "🛑 End Session", "callback_data": "cmd_stop"},
                 {"text": "❓ Help", "callback_data": "cmd_help"},
             ],
         ]
