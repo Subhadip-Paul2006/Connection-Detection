@@ -78,6 +78,16 @@ CREATE TABLE IF NOT EXISTS telegram_alerts (
     FOREIGN KEY(chat_id) REFERENCES telegram_stats(chat_id)
 );
 CREATE INDEX IF NOT EXISTS idx_telegram_alerts_chat ON telegram_alerts(chat_id);
+
+CREATE TABLE IF NOT EXISTS telegram_sessions (
+    chat_id TEXT PRIMARY KEY,
+    session_started_at TEXT NOT NULL,
+    session_ended_at TEXT,
+    last_known_state TEXT NOT NULL,
+    current_severity_focus TEXT,
+    total_findings_sent INTEGER DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -364,5 +374,123 @@ def fetch_telegram_alerts(chat_id=None, limit=50, db_path=None):
     except sqlite3.Error as exc:
         log.error("fetch_telegram_alerts failed: %s", exc)
         return []
+
+
+def upsert_telegram_session(chat_id, state="listening", severity_focus=None, db_path=None):
+    """Upsert a telegram session record on chat_id PRIMARY KEY.
+
+    Resets session_started_at to now, session_ended_at to NULL, total_findings_sent to 0,
+    and updates state and severity focus.
+    """
+    from utils.formatting import utc_now_iso
+    now = utc_now_iso()
+    chat_id_str = str(chat_id).strip()
+    if not chat_id_str:
+        return False
+    try:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            conn.execute(
+                """INSERT INTO telegram_sessions
+                   (chat_id, session_started_at, session_ended_at, last_known_state, current_severity_focus, total_findings_sent, updated_at)
+                   VALUES (?, ?, NULL, ?, ?, 0, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                       session_started_at = excluded.session_started_at,
+                       session_ended_at = NULL,
+                       last_known_state = excluded.last_known_state,
+                       current_severity_focus = excluded.current_severity_focus,
+                       total_findings_sent = 0,
+                       updated_at = excluded.updated_at""",
+                (chat_id_str, now, state, severity_focus, now),
+            )
+        log.info("upserted telegram session for chat_id=%s (state=%s)", chat_id_str, state)
+        return True
+    except sqlite3.Error as exc:
+        log.error("upsert_telegram_session failed: %s", exc)
+        return False
+
+
+def update_telegram_session_state(chat_id, state, severity_focus=None, db_path=None):
+    """Update live state and severity focus for an active session."""
+    from utils.formatting import utc_now_iso
+    now = utc_now_iso()
+    chat_id_str = str(chat_id).strip()
+    if not chat_id_str:
+        return False
+    try:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            conn.execute(
+                """UPDATE telegram_sessions
+                   SET last_known_state = ?,
+                       current_severity_focus = ?,
+                       updated_at = ?
+                   WHERE chat_id = ?""",
+                (state, severity_focus, now, chat_id_str),
+            )
+        log.info("updated telegram session state for chat_id=%s to state=%s", chat_id_str, state)
+        return True
+    except sqlite3.Error as exc:
+        log.error("update_telegram_session_state failed: %s", exc)
+        return False
+
+
+def increment_session_findings(chat_id, count=1, db_path=None):
+    """Atomically increment total_findings_sent for an active session."""
+    from utils.formatting import utc_now_iso
+    now = utc_now_iso()
+    chat_id_str = str(chat_id).strip()
+    if not chat_id_str:
+        return False
+    try:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            conn.execute(
+                """UPDATE telegram_sessions
+                   SET total_findings_sent = total_findings_sent + ?,
+                       updated_at = ?
+                   WHERE chat_id = ?""",
+                (int(count), now, chat_id_str),
+            )
+        return True
+    except sqlite3.Error as exc:
+        log.error("increment_session_findings failed: %s", exc)
+        return False
+
+
+def close_telegram_session(chat_id, db_path=None):
+    """Mark session as ended in telegram_sessions."""
+    from utils.formatting import utc_now_iso
+    now = utc_now_iso()
+    chat_id_str = str(chat_id).strip()
+    if not chat_id_str:
+        return False
+    try:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            conn.execute(
+                """UPDATE telegram_sessions
+                   SET session_ended_at = ?,
+                       last_known_state = 'stopped',
+                       current_severity_focus = NULL,
+                       updated_at = ?
+                   WHERE chat_id = ?""",
+                (now, now, chat_id_str),
+            )
+        log.info("closed telegram session for chat_id=%s", chat_id_str)
+        return True
+    except sqlite3.Error as exc:
+        log.error("close_telegram_session failed: %s", exc)
+        return False
+
+
+def fetch_telegram_sessions(chat_id=None, db_path=None):
+    """Fetch telegram session records. Returns dict or list of dicts."""
+    try:
+        with contextlib.closing(_connect(db_path)) as conn:
+            if chat_id:
+                row = conn.execute("SELECT * FROM telegram_sessions WHERE chat_id = ?", [str(chat_id)]).fetchone()
+                return dict(row) if row else {}
+            return [dict(r) for r in conn.execute("SELECT * FROM telegram_sessions ORDER BY updated_at DESC").fetchall()]
+    except sqlite3.Error as exc:
+        log.error("fetch_telegram_sessions failed: %s", exc)
+        return {} if chat_id else []
+
 
 
