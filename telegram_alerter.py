@@ -177,15 +177,17 @@ def format_connection_alert(rec: dict) -> str:
     """Format a connection-scan record as a Telegram MarkdownV2 message."""
     level  = (rec.get("risk_level") or "UNKNOWN").upper()
     score  = rec.get("risk_score", 0)
-    proc   = _truncate(rec.get("process_name") or "unknown", 40)
-    exe    = _truncate(rec.get("exe_path") or "", 55)
+    proc_info = rec.get("proc_info") or {}
+    proc   = _truncate(proc_info.get("name") or "unknown", 40)
+    exe    = _truncate(proc_info.get("exe") or "", 55)
+    pid    = str(rec.get("pid") or "?")
     remote = str(rec.get("remote_ip") or "?") + ":" + str(rec.get("remote_port") or "?")
-    sigs   = rec.get("signals") or []
+    sigs   = rec.get("signals") or rec.get("reasons") or []
 
     emoji = _risk_emoji(level)
     lines = [
         "\U0001f6a8 *Feluda Alert* \u2014 " + emoji + " *" + _esc(level) + "* \\(score " + _esc(str(score)) + "\\)",
-        "*Process:* `" + _esc(proc) + "`",
+        "*Process:* `" + _esc(proc) + "` \\(PID " + _esc(pid) + "\\)",
     ]
     if exe:
         lines.append("*Path:* `" + _esc(exe) + "`")
@@ -226,7 +228,8 @@ def _sample_alert_message() -> str:
     """A fixed sample message for --test-alert."""
     return (
         "\U0001f6a8 *Feluda Test Alert*\n"
-        "*Process:* `suspicious\\.exe`\n"
+        "*Process:* `suspicious\\.exe` \\(PID 1234\\)\n"
+        "*Path:* `C:\\Windows\\Temp\\suspicious\\.exe`\n"
         "*Remote:* `1\\.2\\.3\\.4:4444`\n"
         "*Risk:* \U0001f480 *CRITICAL* \\(score 95\\)\n"
         "  \u2022 external\\_unknown\\_process\n"
