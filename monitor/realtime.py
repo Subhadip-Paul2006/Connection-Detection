@@ -32,22 +32,162 @@ def _key(rec):
     return (rec.get("pid"), rec.get("local_port"), rec.get("remote_ip"), rec.get("remote_port"))
 
 
+class MonitorController:
+    """Controls the background monitor scan loop state for Telegram remote control."""
+
+    def __init__(self, alerter=None):
+        self.mode = "STOPPED"
+        self.alert_min_score = 50
+        self.mode_started_at = None
+        self.scans_count = 0
+        self.alerts_count = 0
+        self.alerter = alerter
+
+    def set_mode(self, mode: str, min_score: int) -> str:
+        self.mode = mode.upper()
+        self.alert_min_score = min_score
+        self.mode_started_at = time.time()
+        if self.alerter:
+            self.alerter.set_alert_threshold(min_score)
+        log.info("MonitorController mode set to %s (score >= %d)", self.mode, min_score)
+        return f"Mode set to {self.mode} (alerting on score >= {min_score})"
+
+    def stop_scan(self) -> str:
+        self.mode = "STOPPED"
+        self.mode_started_at = None
+        log.info("MonitorController scan stopped")
+        return "Active scan loop paused. Listener remains active."
+
+    def get_status_markdown(self) -> str:
+        from telegram_alerter import _esc
+        if self.mode == "STOPPED" or not self.mode_started_at:
+            uptime_str = "N/A (Stopped)"
+        else:
+            elapsed = int(time.time() - self.mode_started_at)
+            mins, secs = divmod(elapsed, 60)
+            hrs, mins = divmod(mins, 60)
+            uptime_str = f"{hrs}h {mins}m {secs}s" if hrs else (f"{mins}m {secs}s" if mins else f"{secs}s")
+
+        lines = [
+            "\U0001f4ca *Feluda Monitor Status*",
+            f"*Active Mode:* `{_esc(self.mode)}` \\(score \\>= {_esc(str(self.alert_min_score))}\\)",
+            f"*Mode Uptime:* `{_esc(uptime_str)}`",
+            f"*Scans Conducted:* `{_esc(str(self.scans_count))}`",
+            f"*Alerts Triggered:* `{_esc(str(self.alerts_count))}`",
+        ]
+        return "\n".join(lines)
+
+
 def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_baseline=True,
                use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False,
-               use_defender=False, persistence_check=False, alert_telegram=False, test_alert=False):
-    """Start the polling monitor loop. Ctrl+C exits cleanly.
+               use_defender=False, persistence_check=False, alert_telegram=False, test_alert=False,
+               telegram_control=False, args=None):
+    """Start the polling monitor loop. Ctrl+C exits cleanly."""
+    if telegram_control:
+        return run_monitor_control(args or locals())
 
-    Parameters
-    ----------
-    alert_telegram : bool
-        If True, load and start the Telegram alerter (requires env vars
-        FELUDA_BOT_TELEGRAM_TOKEN and FELUDA_TELEGRAM_CHAT_ID).  Missing env
-        vars print a one-line error and continue without alerting -- monitor
-        itself never crashes over a bad Telegram config.
-    test_alert : bool
-        If True, send a single sample Telegram message and return immediately.
-        Does not start the polling loop.
-    """
+
+def run_monitor_control(args_or_dict):
+    """Run two-way Telegram remote control monitor (long-polling listener + controllable scan task)."""
+    import asyncio
+    from telegram_alerter import TelegramAlerter, credentials_available, check_credentials
+    from telegram_listener import TelegramListener, TelegramConflictError
+
+    token, chat_id = credentials_available()
+    if not token or not chat_id:
+        check_credentials(quiet=False)
+        return 1
+
+    cfg = settings()
+    interval = getattr(args_or_dict, "interval", None) or cfg.get("monitor", {}).get("poll_interval_seconds", 5)
+    tg_cooldown = int(cfg.get("telegram", {}).get("cooldown_seconds", 1800))
+
+    alerter = TelegramAlerter(cooldown_seconds=tg_cooldown, alert_threshold=50)
+    if not alerter.configure():
+        return 1
+    alerter.start()
+
+    controller = MonitorController(alerter=alerter)
+    listener = TelegramListener(token=token, allowed_chat_id=chat_id, controller=controller)
+
+    console.print(
+        "\n[bold cyan]Telegram Remote Control Active[/bold cyan] -- Listening for commands (/high, /medium, /low, /stop, /status).\n"
+        "Scan is currently [yellow]STOPPED[/yellow]. Select a mode in Telegram or tap a button to begin.\n"
+    )
+
+    async def _scan_worker():
+        store = conn_collector.ConnectionStore()
+        previous = set()
+        prev_below = {}
+
+        while True:
+            await asyncio.sleep(max(1, int(interval)))
+            if controller.mode == "STOPPED":
+                continue
+
+            controller.scans_count += 1
+            loop = asyncio.get_running_loop()
+
+            def _do_scan():
+                recs = conn_collector.collect_connections()
+                recs = proc_collector.enrich_connections(recs)
+                recs = ips.annotate(recs)
+                recs = ports.annotate(recs)
+                store.observe_scan(recs)
+                repeat_keys = store.repeat_keys(cfg.get("thresholds", {}).get("repeated_connection_min_scans", 3))
+                
+                use_base = getattr(args_or_dict, "no_baseline", False) is False if hasattr(args_or_dict, "no_baseline") else True
+                baseline = database.load_baseline() if use_base else None
+                
+                recs = rules.analyze(
+                    recs, baseline=baseline, repeat_keys=repeat_keys,
+                    use_reputation=getattr(args_or_dict, "reputation_check", False),
+                    use_cert=getattr(args_or_dict, "cert_check", False),
+                    use_geoip=getattr(args_or_dict, "geo_check", False),
+                    use_lineage=getattr(args_or_dict, "lineage_check", False),
+                    use_defender=getattr(args_or_dict, "defender_check", False),
+                )
+                recs.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
+                return recs
+
+            records = await loop.run_in_executor(None, _do_scan)
+            current = {_key(r) for r in records}
+            database.save_scan(records)
+
+            hits = [
+                r for r in records
+                if r.get("risk_score", 0) >= controller.alert_min_score
+                and (_key(r) not in previous or prev_below.get(_key(r)))
+            ]
+
+            if hits:
+                controller.alerts_count += len(hits)
+                for rec in hits:
+                    logger.log_detection(rec)
+                    if rec.get("status") in ALERT_STATUSES:
+                        console.print(render_alert_panel(rec))
+                    alerter.enqueue_connection_alert(rec)
+
+            prev_below = {_key(r): r.get("risk_score", 0) < controller.alert_min_score for r in records}
+            previous = current
+
+    async def _main_async():
+        try:
+            await asyncio.gather(listener.poll_loop(), _scan_worker())
+        except TelegramConflictError:
+            console.print("[bold red]ERROR: Telegram 409 Conflict.[/bold red] Another process is already long-polling this bot token.")
+        except asyncio.CancelledError:
+            pass
+
+    try:
+        asyncio.run(_main_async())
+    except KeyboardInterrupt:
+        console.line()
+        console.print("[bold]Remote control monitor stopped by user.[/bold]")
+    finally:
+        listener.stop()
+        alerter.stop()
+    return 0
     cfg = settings()
     if interval is None:
         interval = cfg.get("monitor", {}).get("poll_interval_seconds", 5)
