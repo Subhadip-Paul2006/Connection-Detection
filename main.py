@@ -230,6 +230,28 @@ def cmd_history(args):
         console.print(render_defender_events_table(events, title=f"Defender Events History (latest {len(events)})"))
         return 0
 
+    # --telegram-sessions: show stored Telegram remote control sessions.
+    if getattr(args, "telegram_sessions", False):
+        sessions = database.fetch_telegram_sessions()
+        if not sessions:
+            console.print("[yellow]No Telegram sessions stored in DB yet.[/yellow]")
+            return 0
+        table = Table(title=f"Telegram Control Sessions (total {len(sessions)})")
+        for col in ("Chat ID", "State", "Focus", "Session Started", "Session Ended", "Findings Sent", "Last Updated"):
+            table.add_column(col)
+        for s in sessions:
+            table.add_row(
+                str(s.get("chat_id", "")),
+                str(s.get("last_known_state", "")),
+                str(s.get("current_severity_focus") or "N/A"),
+                str(s.get("session_started_at", "")),
+                str(s.get("session_ended_at") or "Active / Connected"),
+                str(s.get("total_findings_sent", 0)),
+                str(s.get("updated_at", "")),
+            )
+        console.print(table)
+        return 0
+
     rows = database.fetch_history(
         limit=args.limit, level=args.level, country=getattr(args, "country", None)
     )
@@ -602,6 +624,8 @@ def build_parser():
                    help="show past persistence snapshots instead of connection history")
     h.add_argument("--defender-only", action="store_true",
                    help="show stored Windows Defender event log correlation records instead of connection history")
+    h.add_argument("--telegram-sessions", action="store_true",
+                   help="show stored Telegram remote control sessions instead of connection history")
     h.set_defaults(func=cmd_history)
 
     e = sub.add_parser("export", help="Export current scan to CSV/JSON/HTML")
