@@ -43,6 +43,21 @@ CREATE TABLE IF NOT EXISTS baseline (
     remote_port INTEGER,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS defender_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER,
+    threat_name TEXT,
+    severity TEXT,
+    affected_path TEXT,
+    process_name_if_known TEXT,
+    detected_at TEXT,
+    correlated_history_id INTEGER,
+    match_confidence TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(correlated_history_id) REFERENCES history(id)
+);
+CREATE INDEX IF NOT EXISTS idx_defender_events_ts ON defender_events(detected_at);
 """
 
 
@@ -198,3 +213,54 @@ def clear_baseline(db_path=None):
             conn.execute("DELETE FROM baseline")
     except sqlite3.Error as exc:
         log.error("clear_baseline failed: %s", exc)
+
+
+def save_defender_events(events, db_path=None):
+    """Persist Defender correlation / gap event records.
+    `events` is a list of dicts matching defender_events schema.
+    Returns count of inserted rows.
+    """
+    from utils.formatting import utc_now_iso
+
+    now = utc_now_iso()
+    rows = []
+    for evt in events:
+        rows.append((
+            evt.get("event_id"),
+            evt.get("threat_name", ""),
+            evt.get("severity", ""),
+            evt.get("affected_path", ""),
+            evt.get("process_name_if_known", ""),
+            evt.get("detected_at", ""),
+            evt.get("correlated_history_id"),  # nullable FK
+            evt.get("match_confidence", ""),
+            evt.get("created_at") or now,
+        ))
+    inserted = 0
+    try:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            for row in rows:
+                conn.execute(
+                    """INSERT INTO defender_events
+                       (event_id, threat_name, severity, affected_path, process_name_if_known,
+                        detected_at, correlated_history_id, match_confidence, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    row,
+                )
+                inserted += 1
+        log.info("persisted %d defender event rows", inserted)
+    except sqlite3.Error as exc:
+        log.error("save_defender_events failed: %s", exc)
+    return inserted
+
+
+def fetch_defender_events(limit=50, db_path=None):
+    """Fetch recent Defender events from defender_events table."""
+    sql = "SELECT * FROM defender_events ORDER BY id DESC LIMIT ?"
+    try:
+        with contextlib.closing(_connect(db_path)) as conn:
+            return [dict(r) for r in conn.execute(sql, [int(limit)]).fetchall()]
+    except sqlite3.Error as exc:
+        log.error("fetch_defender_events failed: %s", exc)
+        return []
+
