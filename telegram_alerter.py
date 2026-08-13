@@ -82,37 +82,102 @@ def _load_dotenv() -> dict:
         return {}
 
 
-def credentials_available():
-    """Return (token, chat_id) from env vars (with .env fallback), or (None, None)."""
+import json
+from pathlib import Path
+from database import database
+
+# ---------------------------------------------------------------------------
+# User Settings Loader & Storage
+# ---------------------------------------------------------------------------
+
+
+def get_user_settings_path() -> Path:
+    r"""Return path to user_settings.json.
+
+    Prefers %LOCALAPPDATA%\Feluda\user_settings.json on Windows if available,
+    falling back to database/user_settings.json.
+    NOTE: Revisit once packaging establishes a unified per-user app data directory.
+    """
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        p = Path(local_appdata) / "Feluda" / "user_settings.json"
+    else:
+        p = Path(__file__).resolve().parent / "database" / "user_settings.json"
+    return p
+
+
+def load_user_settings() -> dict:
+    """Load user settings from user_settings.json."""
+    p = get_user_settings_path()
+    if not p.is_file():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_user_settings(data: dict) -> bool:
+    """Save/update key-values in user_settings.json."""
+    p = get_user_settings_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        current = load_user_settings()
+        current.update(data)
+        p.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        return True
+    except Exception as exc:
+        log.error("Failed to save user settings: %s", exc)
+        return False
+
+
+def get_chat_id_info() -> tuple[Optional[str], str]:
+    """Return (chat_id, source_name) where source_name is 'user_settings', '.env', or 'none'."""
+    settings = load_user_settings()
+    chat_id = (settings.get("telegram_chat_id") or "").strip()
+    if chat_id:
+        return chat_id, "user_settings"
+
     dotenv = _load_dotenv()
-    token   = (os.environ.get(_ENV_TOKEN, "") or dotenv.get(_ENV_TOKEN, "")).strip() or None
-    chat_id = (os.environ.get(_ENV_CHAT, "") or dotenv.get(_ENV_CHAT, "")).strip() or None
+    env_chat = (os.environ.get(_ENV_CHAT, "") or dotenv.get(_ENV_CHAT, "")).strip()
+    if env_chat:
+        return env_chat, ".env"
+
+    return None, "none"
+
+
+def credentials_available() -> tuple[Optional[str], Optional[str]]:
+    """Return (token, chat_id) checking user_settings first, then .env fallback."""
+    dotenv = _load_dotenv()
+    token = (os.environ.get(_ENV_TOKEN, "") or dotenv.get(_ENV_TOKEN, "")).strip() or None
+    chat_id, _ = get_chat_id_info()
     return token, chat_id
 
 
 def check_credentials(quiet: bool = False) -> bool:
-    """Return True if both credential env vars are set.
+    """Return True if both token and chat ID are set.
 
-    If ``quiet`` is False (the default) print a clear one-line error for each
-    missing variable -- matching the existing VT key error-handling pattern.
+    If quiet is False print clear actionable errors.
     """
     token, chat_id = credentials_available()
+    _, chat_source = get_chat_id_info()
     ok = True
     if not token:
         if not quiet:
             print(
                 "[Feluda] --alert-telegram: " + _ENV_TOKEN + " is not set. "
-                "Set it in .env or as a shell env var (never hardcode it)."
+                "Set it in .env or as a shell env var."
             )
         log.error("--alert-telegram: %s not configured", _ENV_TOKEN)
         ok = False
     if not chat_id:
         if not quiet:
             print(
-                "[Feluda] --alert-telegram: " + _ENV_CHAT + " is not set. "
-                "Set it in .env or as a shell env var."
+                "[Feluda] --alert-telegram: Telegram Chat ID is not configured. "
+                "Run 'python main.py setup-telegram' to connect your Telegram account, "
+                "or set " + _ENV_CHAT + " in .env."
             )
-        log.error("--alert-telegram: %s not configured", _ENV_CHAT)
+        log.error("--alert-telegram: chat_id not configured")
         ok = False
     return ok
 
@@ -244,8 +309,16 @@ def _sample_alert_message() -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _send_message_async(token: str, chat_id: str, text: str) -> bool:
-    """POST one message to the Telegram Bot API.  Returns True on success.
+async def _send_message_async(
+    token: str,
+    chat_id: str,
+    text: str,
+    alert_type: str = "custom",
+    risk_level: str = "INFO",
+    risk_score: int = 0,
+    details: str = "",
+) -> bool:
+    """POST one message to the Telegram Bot API. Returns True on success.
 
     Handles transient errors gracefully: logs them and returns False.
     Never raises -- the caller should never crash over a failed notification.
@@ -268,13 +341,19 @@ async def _send_message_async(token: str, chat_id: str, text: str) -> bool:
             resp = await client.post(url, json=payload)
         if resp.status_code == 200:
             log.info("Telegram alert sent (chat_id=%s)", chat_id)
+            database.record_telegram_alert(
+                chat_id=chat_id,
+                alert_type=alert_type,
+                risk_level=risk_level,
+                risk_score=risk_score,
+                details=details or text[:150],
+            )
             return True
         body = resp.text[:200]
         log.error(
             "Telegram API error %d for chat %s: %s",
             resp.status_code, chat_id, body,
         )
-        # 429 = rate-limited; 401 = bad token; 403 = bot blocked -- logged, no crash
         return False
     except Exception as exc:
         log.error("Telegram send failed: %s", exc)
@@ -357,11 +436,13 @@ class TelegramAlerter:
         )
 
     def stop(self) -> None:
-        """Signal the drain loop to exit and wait briefly for it."""
+        """Signal the drain loop to exit, wait for it, and update scan_stop in DB."""
         if self._loop and self._queue:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, None)  # sentinel
         if self._thread:
             self._thread.join(timeout=5)
+        if self._chat_id:
+            database.record_telegram_scan_stop(self._chat_id)
 
     # ------------------------------------------------------------------ enqueueing
 
@@ -392,7 +473,16 @@ class TelegramAlerter:
             return
         self._tracker.mark_alerted(key)
         text = format_connection_alert(rec)
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, text)
+        proc_info = rec.get("proc_info") or {}
+        proc_name = proc_info.get("name") or "unknown"
+        meta = {
+            "text": text,
+            "alert_type": "connection",
+            "risk_level": (rec.get("risk_level") or "UNKNOWN").upper(),
+            "risk_score": score,
+            "details": f"Process: {proc_name} (PID {rec.get('pid')}) -> {rec.get('remote_ip')}:{rec.get('remote_port')}",
+        }
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, meta)
 
     def enqueue_persistence_alert(self, entry: dict) -> None:
         """Submit a persistence entry for alerting if it clears threshold+debounce."""
@@ -406,24 +496,49 @@ class TelegramAlerter:
             return
         self._tracker.mark_alerted(key)
         text = format_persistence_alert(entry)
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, text)
+        meta = {
+            "text": text,
+            "alert_type": "persistence",
+            "risk_level": "HIGH" if pts >= 40 else "MEDIUM",
+            "risk_score": pts,
+            "details": f"Persistence: {entry.get('source_type')} - {entry.get('location_detail')}",
+        }
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, meta)
 
     def enqueue_raw(self, text: str) -> None:
         """Send a pre-formatted message (used by --test-alert)."""
         if not self._enabled or self._queue is None:
             log.error("enqueue_raw called but alerter not started")
             return
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, text)
+        meta = {
+            "text": text,
+            "alert_type": "test",
+            "risk_level": "INFO",
+            "risk_score": 0,
+            "details": "Raw / test alert",
+        }
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, meta)
 
     # ------------------------------------------------------------------ async drain
 
     async def _drain(self) -> None:
         """Async coroutine: dequeue messages and POST them one by one."""
         while True:
-            text = await self._queue.get()
-            if text is None:   # sentinel -- shut down
+            item = await self._queue.get()
+            if item is None:   # sentinel -- shut down
                 break
-            await _send_message_async(self._token, self._chat_id, text)
+            if isinstance(item, dict):
+                await _send_message_async(
+                    self._token,
+                    self._chat_id,
+                    item["text"],
+                    alert_type=item.get("alert_type", "connection"),
+                    risk_level=item.get("risk_level", "INFO"),
+                    risk_score=item.get("risk_score", 0),
+                    details=item.get("details", ""),
+                )
+            else:
+                await _send_message_async(self._token, self._chat_id, str(item))
             self._queue.task_done()
 
 
