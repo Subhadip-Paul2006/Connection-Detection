@@ -88,6 +88,20 @@ CREATE TABLE IF NOT EXISTS telegram_sessions (
     total_findings_sent INTEGER DEFAULT 0,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS correlated_chains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_identity TEXT NOT NULL,
+    stages_involved TEXT NOT NULL,
+    chain_narrative TEXT NOT NULL,
+    bonus_points INTEGER NOT NULL,
+    final_risk_score INTEGER NOT NULL,
+    final_risk_level TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    related_history_ids TEXT DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_chains_identity ON correlated_chains(target_identity);
+CREATE INDEX IF NOT EXISTS idx_chains_ts ON correlated_chains(detected_at);
 """
 
 
@@ -491,6 +505,62 @@ def fetch_telegram_sessions(chat_id=None, db_path=None):
     except sqlite3.Error as exc:
         log.error("fetch_telegram_sessions failed: %s", exc)
         return {} if chat_id else []
+
+
+def save_correlated_chain(chain_dict, db_path=None):
+    """Save an attack chain record into correlated_chains table."""
+    import json
+    from utils.formatting import utc_now_iso
+    now = utc_now_iso()
+    try:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            cur = conn.execute(
+                """INSERT INTO correlated_chains
+                   (target_identity, stages_involved, chain_narrative, bonus_points, final_risk_score, final_risk_level, detected_at, related_history_ids)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(chain_dict.get("target_identity", "")),
+                    json.dumps(chain_dict.get("stages_involved", [])),
+                    str(chain_dict.get("chain_narrative", "")),
+                    int(chain_dict.get("bonus_points", 0)),
+                    int(chain_dict.get("final_risk_score", 50)),
+                    str(chain_dict.get("final_risk_level", "HIGH")),
+                    chain_dict.get("detected_at") or now,
+                    json.dumps(chain_dict.get("related_history_ids", [])),
+                ),
+            )
+            chain_id = cur.lastrowid
+        log.info("saved correlated chain id=%d for target=%s", chain_id, chain_dict.get("target_identity"))
+        return chain_id
+    except sqlite3.Error as exc:
+        log.error("save_correlated_chain failed: %s", exc)
+        return None
+
+
+def fetch_correlated_chains(limit=50, db_path=None):
+    """Fetch stored attack chain records."""
+    import json
+    try:
+        with contextlib.closing(_connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT * FROM correlated_chains ORDER BY id DESC LIMIT ?", [int(limit)]
+            ).fetchall()
+            results = []
+            for r in rows:
+                d = dict(r)
+                try:
+                    d["stages_involved"] = json.loads(d.get("stages_involved") or "[]")
+                except Exception:
+                    pass
+                try:
+                    d["related_history_ids"] = json.loads(d.get("related_history_ids") or "[]")
+                except Exception:
+                    pass
+                results.append(d)
+            return results
+    except sqlite3.Error as exc:
+        log.error("fetch_correlated_chains failed: %s", exc)
+        return []
 
 
 
