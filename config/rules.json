@@ -93,7 +93,8 @@
     "suspicious_location": 25,
     "multiple_external_connections": 10,
     "repeated_connection": 10,
-    "outside_baseline": 15
+    "outside_baseline": 15,
+    "defender_correlated_detection": 50
   },
 
   "thresholds": {
