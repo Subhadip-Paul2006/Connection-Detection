@@ -317,12 +317,9 @@ async def _send_message_async(
     risk_level: str = "INFO",
     risk_score: int = 0,
     details: str = "",
+    reply_markup: dict | None = None,
 ) -> bool:
-    """POST one message to the Telegram Bot API. Returns True on success.
-
-    Handles transient errors gracefully: logs them and returns False.
-    Never raises -- the caller should never crash over a failed notification.
-    """
+    """POST one message to the Telegram Bot API. Returns True on success."""
     try:
         import httpx
     except ImportError:
@@ -336,18 +333,22 @@ async def _send_message_async(
         "parse_mode": "MarkdownV2",
         "disable_web_page_preview": True,
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, json=payload)
         if resp.status_code == 200:
             log.info("Telegram alert sent (chat_id=%s)", chat_id)
-            database.record_telegram_alert(
-                chat_id=chat_id,
-                alert_type=alert_type,
-                risk_level=risk_level,
-                risk_score=risk_score,
-                details=details or text[:150],
-            )
+            if alert_type != "menu":  # don't pollute alert history table with menu UI posts
+                database.record_telegram_alert(
+                    chat_id=chat_id,
+                    alert_type=alert_type,
+                    risk_level=risk_level,
+                    risk_score=risk_score,
+                    details=details or text[:150],
+                )
             return True
         body = resp.text[:200]
         log.error(
@@ -357,6 +358,64 @@ async def _send_message_async(
         return False
     except Exception as exc:
         log.error("Telegram send failed: %s", exc)
+        return False
+
+
+def register_bot_commands(token: str) -> bool:
+    """Register slash commands in Telegram's UI menu via setMyCommands."""
+    try:
+        import httpx
+        url = f"https://api.telegram.org/bot{token}/setMyCommands"
+        commands = [
+            {"command": "high", "description": "Start scan — alert on HIGH & CRITICAL risk (score >= 50)"},
+            {"command": "medium", "description": "Start scan — alert on MEDIUM+ risk (score >= 25)"},
+            {"command": "low", "description": "Start scan — alert on ALL findings (score >= 0)"},
+            {"command": "stop", "description": "Pause scan loop (listener remains active)"},
+            {"command": "status", "description": "Show current mode, uptime, and alert count"},
+            {"command": "help", "description": "Show command menu & control buttons"},
+        ]
+        resp = httpx.post(url, json={"commands": commands}, timeout=10.0)
+        if resp.status_code == 200 and resp.json().get("ok"):
+            log.info("Telegram bot commands registered with setMyCommands")
+            return True
+        log.warning("setMyCommands returned HTTP %d: %s", resp.status_code, resp.text[:100])
+        return False
+    except Exception as exc:
+        log.error("register_bot_commands failed: %s", exc)
+        return False
+
+
+def build_inline_keyboard() -> dict:
+    """Build the inline keyboard button grid for mode control."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🔴 High Risk (>=50)", "callback_data": "cmd_high"},
+                {"text": "🟡 Medium+ (>=25)", "callback_data": "cmd_medium"},
+            ],
+            [
+                {"text": "🟢 All Low+ (>=0)", "callback_data": "cmd_low"},
+                {"text": "🛑 Stop Scan", "callback_data": "cmd_stop"},
+            ],
+            [
+                {"text": "📊 Status", "callback_data": "cmd_status"},
+                {"text": "❓ Help", "callback_data": "cmd_help"},
+            ],
+        ]
+    }
+
+
+def answer_callback_query(token: str, callback_query_id: str, text: str = "") -> bool:
+    """POST to answerCallbackQuery to acknowledge inline button clicks."""
+    try:
+        import httpx
+        url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        resp = httpx.post(url, json=payload, timeout=5.0)
+        return resp.status_code == 200
+    except Exception:
         return False
 
 
@@ -406,6 +465,11 @@ class TelegramAlerter:
         self._chat_id = chat_id
         self._enabled = True
         return True
+
+    def set_alert_threshold(self, threshold: int) -> None:
+        """Dynamically update minimum score threshold for alerts."""
+        self._threshold = max(0, int(threshold))
+        log.info("TelegramAlerter threshold set to %d", self._threshold)
 
     @property
     def enabled(self) -> bool:
