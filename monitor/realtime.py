@@ -35,13 +35,15 @@ def _key(rec):
 class MonitorController:
     """Controls the background monitor scan loop state for Telegram remote control."""
 
-    def __init__(self, alerter=None):
-        self.mode = "STOPPED"
+    def __init__(self, alerter=None, chat_id=None):
+        self.mode = "PAUSED"
         self.alert_min_score = 50
         self.mode_started_at = None
         self.scans_count = 0
         self.alerts_count = 0
         self.alerter = alerter
+        self.chat_id = str(chat_id).strip() if chat_id else None
+        self.session_stopped = False
 
     def set_mode(self, mode: str, min_score: int) -> str:
         self.mode = mode.upper()
@@ -49,18 +51,41 @@ class MonitorController:
         self.mode_started_at = time.time()
         if self.alerter:
             self.alerter.set_alert_threshold(min_score)
+        if self.chat_id:
+            database.update_telegram_session_state(self.chat_id, state="active", severity_focus=self.mode)
         log.info("MonitorController mode set to %s (score >= %d)", self.mode, min_score)
         return f"Mode set to {self.mode} (alerting on score >= {min_score})"
 
-    def stop_scan(self) -> str:
-        self.mode = "STOPPED"
+    def pause_scan(self) -> str:
+        self.mode = "PAUSED"
         self.mode_started_at = None
-        log.info("MonitorController scan stopped")
+        if self.chat_id:
+            database.update_telegram_session_state(self.chat_id, state="paused", severity_focus=None)
+        log.info("MonitorController scan paused")
         return "Active scan loop paused. Listener remains active."
+
+    def stop_scan(self) -> str:
+        """Alias for pause_scan for backward compatibility."""
+        return self.pause_scan()
+
+    def stop_session(self) -> str:
+        self.mode = "STOPPED"
+        self.session_stopped = True
+        if self.chat_id:
+            database.close_telegram_session(self.chat_id)
+        log.info("MonitorController session stopped by user command")
+        return "Session ended. Remote control disconnecting."
 
     def get_status_markdown(self) -> str:
         from telegram_alerter import _esc
-        if self.mode == "STOPPED" or not self.mode_started_at:
+        sess = database.fetch_telegram_sessions(self.chat_id) if self.chat_id else {}
+        db_state = sess.get("last_known_state", self.mode)
+        db_focus = sess.get("current_severity_focus") or self.mode if self.mode != "PAUSED" else "N/A"
+        db_findings = sess.get("total_findings_sent", self.alerts_count)
+
+        if self.mode == "PAUSED" or not self.mode_started_at:
+            uptime_str = "N/A (Paused)"
+        elif self.mode == "STOPPED":
             uptime_str = "N/A (Stopped)"
         else:
             elapsed = int(time.time() - self.mode_started_at)
@@ -69,11 +94,12 @@ class MonitorController:
             uptime_str = f"{hrs}h {mins}m {secs}s" if hrs else (f"{mins}m {secs}s" if mins else f"{secs}s")
 
         lines = [
-            "\U0001f4ca *Feluda Monitor Status*",
-            f"*Active Mode:* `{_esc(self.mode)}` \\(score \\>\\= {_esc(str(self.alert_min_score))}\\)",
+            "\U0001f4ca *Feluda Session Status*",
+            f"*State:* `{_esc(str(db_state).upper())}`",
+            f"*Severity Focus:* `{_esc(str(db_focus))}` \\(score \\>\\= {_esc(str(self.alert_min_score))}\\)",
             f"*Mode Uptime:* `{_esc(uptime_str)}`",
             f"*Scans Conducted:* `{_esc(str(self.scans_count))}`",
-            f"*Alerts Triggered:* `{_esc(str(self.alerts_count))}`",
+            f"*Findings Sent:* `{_esc(str(db_findings))}`",
         ]
         return "\n".join(lines)
 
@@ -102,17 +128,20 @@ def run_monitor_control(args_or_dict):
     interval = getattr(args_or_dict, "interval", None) or cfg.get("monitor", {}).get("poll_interval_seconds", 5)
     tg_cooldown = int(cfg.get("telegram", {}).get("cooldown_seconds", 1800))
 
+    # Initialize/upsert session in DB
+    database.upsert_telegram_session(chat_id, state="listening", severity_focus=None)
+
     alerter = TelegramAlerter(cooldown_seconds=tg_cooldown, alert_threshold=50)
     if not alerter.configure():
         return 1
     alerter.start()
 
-    controller = MonitorController(alerter=alerter)
+    controller = MonitorController(alerter=alerter, chat_id=chat_id)
     listener = TelegramListener(token=token, allowed_chat_id=chat_id, controller=controller)
 
     console.print(
-        "\n[bold cyan]Telegram Remote Control Active[/bold cyan] -- Listening for commands (/high, /medium, /low, /stop, /status).\n"
-        "Scan is currently [yellow]STOPPED[/yellow]. Select a mode in Telegram or tap a button to begin.\n"
+        "\n[bold cyan]Telegram Remote Control Active[/bold cyan] -- Listening for commands (/high, /medium, /low, /pause, /stop, /status).\n"
+        "Session is currently [yellow]PAUSED / LISTENING[/yellow]. Select a mode in Telegram or tap a button to begin.\n"
     )
 
     async def _scan_worker():
@@ -120,9 +149,9 @@ def run_monitor_control(args_or_dict):
         previous = set()
         prev_below = {}
 
-        while True:
+        while not controller.session_stopped:
             await asyncio.sleep(max(1, int(interval)))
-            if controller.mode == "STOPPED":
+            if controller.mode in ("STOPPED", "PAUSED"):
                 continue
 
             controller.scans_count += 1
@@ -162,6 +191,7 @@ def run_monitor_control(args_or_dict):
 
             if hits:
                 controller.alerts_count += len(hits)
+                database.increment_session_findings(chat_id, len(hits))
                 for rec in hits:
                     logger.log_detection(rec)
                     if rec.get("status") in ALERT_STATUSES:
@@ -172,19 +202,31 @@ def run_monitor_control(args_or_dict):
             previous = current
 
     async def _main_async():
-        try:
-            await asyncio.gather(listener.poll_loop(), _scan_worker())
-        except TelegramConflictError:
-            console.print("[bold red]ERROR: Telegram 409 Conflict.[/bold red] Another process is already long-polling this bot token.")
-        except asyncio.CancelledError:
-            pass
+        poll_task = asyncio.create_task(listener.poll_loop())
+        scan_task = asyncio.create_task(_scan_worker())
+
+        while not controller.session_stopped:
+            await asyncio.sleep(0.5)
+            if poll_task.done():
+                exc = poll_task.exception()
+                if exc:
+                    raise exc
+                break
+
+        scan_task.cancel()
+        poll_task.cancel()
 
     try:
         asyncio.run(_main_async())
+    except TelegramConflictError:
+        console.print("[bold red]ERROR: Telegram 409 Conflict.[/bold red] Another process is already long-polling this bot token.")
     except KeyboardInterrupt:
         console.line()
-        console.print("[bold]Remote control monitor stopped by user.[/bold]")
+        console.print("[bold]Remote control monitor stopped by user (Ctrl+C).[/bold]")
+    except asyncio.CancelledError:
+        pass
     finally:
+        database.close_telegram_session(chat_id)
         listener.stop()
         alerter.stop()
     return 0
