@@ -9,10 +9,10 @@ from utils.formatting import build_connection_payload
 log = logger.get_logger("reports.json")
 
 
-def export_json(records, path, browser_records=None, persistence_records=None):
+def export_json(records, path, browser_records=None, persistence_records=None, chain_records=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not (browser_records or persistence_records):
+    if not (browser_records or persistence_records or chain_records):
         payload = [build_connection_payload(r) for r in records]
     else:
         payload = {"connections": [build_connection_payload(r) for r in records]}
@@ -20,6 +20,8 @@ def export_json(records, path, browser_records=None, persistence_records=None):
             payload["browser_urls"] = browser_records
         if persistence_records:
             payload["persistence_entries"] = persistence_records
+        if chain_records:
+            payload["correlated_chains"] = chain_records
     try:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, default=str)
