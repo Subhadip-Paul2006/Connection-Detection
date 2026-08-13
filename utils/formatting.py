@@ -210,6 +210,105 @@ def render_persistence_table(entries, errors=None, title="Persistence / Autorun 
     return table
 
 
+def render_defender_panel(confirmed_matches, gap_events):
+    """Build a rich Panel/Group for Defender correlation findings and gaps."""
+    from rich.console import Group
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    items = []
+
+    if confirmed_matches:
+        conf_table = Table(title="Confirmed Defender Matches (Scan + Defender)", expand=True)
+        conf_table.add_column("Process (PID)", no_wrap=True)
+        conf_table.add_column("Threat Name", overflow="fold")
+        conf_table.add_column("Severity", no_wrap=True)
+        conf_table.add_column("Confidence", no_wrap=True)
+        conf_table.add_column("Affected Path", overflow="fold")
+
+        for match in confirmed_matches:
+            rec = match.get("record") or {}
+            proc = rec.get("proc_info") or {}
+            evt = match.get("event") or {}
+            conf = match.get("match_confidence", "unknown")
+
+            proc_str = f"{proc.get('name', 'unknown')} ({rec.get('pid', '?')})"
+            conf_color = "green" if conf == "high" else ("yellow" if conf == "medium" else "dim")
+
+            conf_table.add_row(
+                Text(proc_str),
+                Text(str(evt.get("threat_name", ""))),
+                Text(str(evt.get("severity", ""))),
+                f"[{conf_color}]{conf}[/{conf_color}]",
+                Text(str(evt.get("affected_path", ""))),
+            )
+        items.append(conf_table)
+
+    if gap_events:
+        gap_table = Table(title="Defender Gaps (Detected by Defender, Missed by Scan)", expand=True)
+        gap_table.add_column("Event ID", no_wrap=True)
+        gap_table.add_column("Threat Name", overflow="fold")
+        gap_table.add_column("Severity", no_wrap=True)
+        gap_table.add_column("Process / Path", overflow="fold")
+        gap_table.add_column("Detected At", no_wrap=True)
+
+        for evt in gap_events:
+            proc_or_path = evt.get("affected_path") or evt.get("process_name_if_known") or "-"
+            gap_table.add_row(
+                Text(str(evt.get("event_id", ""))),
+                Text(str(evt.get("threat_name", ""))),
+                Text(str(evt.get("severity", ""))),
+                Text(proc_or_path),
+                Text(str(evt.get("detected_at", ""))),
+            )
+        items.append(gap_table)
+
+    if not items:
+        return Panel(
+            Text("No Windows Defender detections correlated in recent events.", style="dim"),
+            title="[bold cyan]Windows Defender Correlation[/bold cyan]",
+        )
+
+    return Panel(
+        Group(*items),
+        title="[bold cyan]Windows Defender / Event Log Correlation[/bold cyan]",
+        border_style="cyan",
+        expand=True,
+    )
+
+
+def render_defender_events_table(events, title="Windows Defender Events History"):
+    """Render stored Defender events from defender_events SQLite table."""
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(title=title, expand=True)
+    table.add_column("Event ID", no_wrap=True)
+    table.add_column("Threat Name", overflow="fold")
+    table.add_column("Severity", no_wrap=True)
+    table.add_column("Process", overflow="fold")
+    table.add_column("Affected Path", overflow="fold")
+    table.add_column("Confidence", no_wrap=True)
+    table.add_column("Correlated History ID", justify="right", no_wrap=True)
+    table.add_column("Detected At", no_wrap=True)
+
+    for e in events:
+        conf = e.get("match_confidence") or "gap"
+        conf_color = "green" if conf == "high" else ("yellow" if conf == "medium" else "dim")
+        table.add_row(
+            Text(str(e.get("event_id", ""))),
+            Text(str(e.get("threat_name", ""))),
+            Text(str(e.get("severity", ""))),
+            Text(str(e.get("process_name_if_known", "") or "-")),
+            Text(str(e.get("affected_path", "") or "-")),
+            f"[{conf_color}]{conf}[/{conf_color}]",
+            Text(str(e.get("correlated_history_id") if e.get("correlated_history_id") is not None else "-")),
+            Text(str(e.get("detected_at", ""))),
+        )
+    return table
+
+
 # ---------------------------------------------------------------------------
 # HTML export
 # ---------------------------------------------------------------------------
