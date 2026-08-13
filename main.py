@@ -623,7 +623,31 @@ def build_parser():
                     help="row cap when --all is passed")
     pe.set_defaults(func=cmd_persistence)
 
+    stg = sub.add_parser("setup-telegram", help="Guided setup to connect your Telegram account to receive alerts")
+    stg.set_defaults(func=cmd_setup_telegram)
+
+    tgs = sub.add_parser("telegram-status", help="Show current Telegram recipient status & alert statistics")
+    tgs.set_defaults(func=cmd_telegram_status)
+
+    tgr = sub.add_parser("telegram-reset", help="Reset saved Telegram recipient configuration")
+    tgr.set_defaults(func=cmd_telegram_reset)
+
     return p
+
+
+def cmd_setup_telegram(args):
+    import telegram_setup
+    telegram_setup.setup_telegram_cli()
+
+
+def cmd_telegram_status(args):
+    import telegram_setup
+    telegram_setup.show_telegram_status_cli()
+
+
+def cmd_telegram_reset(args):
+    import telegram_setup
+    telegram_setup.reset_telegram_cli()
 
 
 def _reputation_enabled(args):
