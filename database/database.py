@@ -58,6 +58,26 @@ CREATE TABLE IF NOT EXISTS defender_events (
     FOREIGN KEY(correlated_history_id) REFERENCES history(id)
 );
 CREATE INDEX IF NOT EXISTS idx_defender_events_ts ON defender_events(detected_at);
+
+CREATE TABLE IF NOT EXISTS telegram_stats (
+    chat_id TEXT PRIMARY KEY,
+    total_alerts_sent INTEGER DEFAULT 0,
+    last_alert_at TEXT,
+    last_scan_ended_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS telegram_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,
+    alert_type TEXT,
+    risk_level TEXT,
+    risk_score INTEGER,
+    details TEXT,
+    sent_at TEXT NOT NULL,
+    FOREIGN KEY(chat_id) REFERENCES telegram_stats(chat_id)
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_alerts_chat ON telegram_alerts(chat_id);
 """
 
 
@@ -263,4 +283,86 @@ def fetch_defender_events(limit=50, db_path=None):
     except sqlite3.Error as exc:
         log.error("fetch_defender_events failed: %s", exc)
         return []
+
+
+def record_telegram_alert(chat_id, alert_type="connection", risk_level="HIGH", risk_score=0, details="", db_path=None):
+    """Log a sent Telegram alert and UPSERT total count in telegram_stats for chat_id."""
+    from utils.formatting import utc_now_iso
+    now = utc_now_iso()
+    chat_id_str = str(chat_id).strip()
+    try:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            # 1. Insert alert log entry
+            conn.execute(
+                """INSERT INTO telegram_alerts (chat_id, alert_type, risk_level, risk_score, details, sent_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (chat_id_str, alert_type, risk_level, int(risk_score), str(details), now),
+            )
+            # 2. UPSERT into telegram_stats
+            conn.execute(
+                """INSERT INTO telegram_stats (chat_id, total_alerts_sent, last_alert_at, updated_at)
+                   VALUES (?, 1, ?, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                       total_alerts_sent = total_alerts_sent + 1,
+                       last_alert_at = excluded.last_alert_at,
+                       updated_at = excluded.updated_at""",
+                (chat_id_str, now, now),
+            )
+        log.info("recorded telegram alert for chat_id=%s (type=%s)", chat_id_str, alert_type)
+        return True
+    except sqlite3.Error as exc:
+        log.error("record_telegram_alert failed: %s", exc)
+        return False
+
+
+def record_telegram_scan_stop(chat_id, db_path=None):
+    """Update last_scan_ended_at timestamp in telegram_stats for chat_id when scan/monitor stops."""
+    from utils.formatting import utc_now_iso
+    now = utc_now_iso()
+    chat_id_str = str(chat_id).strip()
+    if not chat_id_str:
+        return False
+    try:
+        with contextlib.closing(_connect(db_path)) as conn, conn:
+            conn.execute(
+                """INSERT INTO telegram_stats (chat_id, total_alerts_sent, last_scan_ended_at, updated_at)
+                   VALUES (?, 0, ?, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                       last_scan_ended_at = excluded.last_scan_ended_at,
+                       updated_at = excluded.updated_at""",
+                (chat_id_str, now, now),
+            )
+        log.info("recorded telegram scan stop for chat_id=%s", chat_id_str)
+        return True
+    except sqlite3.Error as exc:
+        log.error("record_telegram_scan_stop failed: %s", exc)
+        return False
+
+
+def fetch_telegram_stats(chat_id=None, db_path=None):
+    """Fetch telegram recipient stats. Returns dict or list of dicts."""
+    try:
+        with contextlib.closing(_connect(db_path)) as conn:
+            if chat_id:
+                row = conn.execute("SELECT * FROM telegram_stats WHERE chat_id = ?", [str(chat_id)]).fetchone()
+                return dict(row) if row else {}
+            return [dict(r) for r in conn.execute("SELECT * FROM telegram_stats ORDER BY updated_at DESC").fetchall()]
+    except sqlite3.Error as exc:
+        log.error("fetch_telegram_stats failed: %s", exc)
+        return {} if chat_id else []
+
+
+def fetch_telegram_alerts(chat_id=None, limit=50, db_path=None):
+    """Fetch logged telegram alerts."""
+    try:
+        with contextlib.closing(_connect(db_path)) as conn:
+            if chat_id:
+                sql = "SELECT * FROM telegram_alerts WHERE chat_id = ? ORDER BY id DESC LIMIT ?"
+                return [dict(r) for r in conn.execute(sql, [str(chat_id), int(limit)]).fetchall()]
+            sql = "SELECT * FROM telegram_alerts ORDER BY id DESC LIMIT ?"
+            return [dict(r) for r in conn.execute(sql, [int(limit)]).fetchall()]
+    except sqlite3.Error as exc:
+        log.error("fetch_telegram_alerts failed: %s", exc)
+        return []
+
 
