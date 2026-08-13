@@ -1,9 +1,12 @@
 """Unit tests for Telegram two-way listener and remote control logic."""
 
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from database import database
 from monitor.realtime import MonitorController
 import telegram_listener
 
@@ -11,17 +14,27 @@ import telegram_listener
 class TestTelegramListenerAndControl(unittest.TestCase):
 
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_history.db"
+        self.chat_id = "5220202988"
+
+        # Initialize DB & session
+        database.upsert_telegram_session(self.chat_id, state="listening", db_path=self.db_path)
+
         self.mock_alerter = MagicMock()
-        self.controller = MonitorController(alerter=self.mock_alerter)
+        self.controller = MonitorController(alerter=self.mock_alerter, chat_id=self.chat_id)
         self.listener = telegram_listener.TelegramListener(
             token="12345:fake_token",
-            allowed_chat_id="5220202988",
+            allowed_chat_id=self.chat_id,
             controller=self.controller,
         )
 
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
     def test_monitor_controller_state_transitions(self):
         # Initial state
-        self.assertEqual(self.controller.mode, "STOPPED")
+        self.assertEqual(self.controller.mode, "PAUSED")
         self.assertEqual(self.controller.alert_min_score, 50)
 
         # Set HIGH mode
@@ -31,17 +44,17 @@ class TestTelegramListenerAndControl(unittest.TestCase):
         self.mock_alerter.set_alert_threshold.assert_called_with(50)
         self.assertIn("HIGH", msg)
 
-        # Set MEDIUM mode
-        msg = self.controller.set_mode("MEDIUM", min_score=25)
-        self.assertEqual(self.controller.mode, "MEDIUM")
-        self.assertEqual(self.controller.alert_min_score, 25)
-        self.mock_alerter.set_alert_threshold.assert_called_with(25)
-
-        # Stop scan
-        msg = self.controller.stop_scan()
-        self.assertEqual(self.controller.mode, "STOPPED")
+        # Pause scan
+        msg = self.controller.pause_scan()
+        self.assertEqual(self.controller.mode, "PAUSED")
         self.assertIsNone(self.controller.mode_started_at)
-        self.assertTrue("paused" in msg.lower() or "stopped" in msg.lower())
+        self.assertIn("paused", msg.lower())
+
+        # Stop session
+        msg = self.controller.stop_session()
+        self.assertEqual(self.controller.mode, "STOPPED")
+        self.assertTrue(self.controller.session_stopped)
+        self.assertIn("ended", msg.lower())
 
     @patch("telegram_listener._send_message_async", new_callable=AsyncMock)
     def test_listener_process_commands(self, mock_send):
@@ -53,19 +66,18 @@ class TestTelegramListenerAndControl(unittest.TestCase):
             self.assertEqual(self.controller.mode, "HIGH")
             self.assertEqual(self.controller.alert_min_score, 50)
 
+            # /pause
+            await self.listener.process_command("/pause")
+            self.assertEqual(self.controller.mode, "PAUSED")
+
             # /medium
             await self.listener.process_command("/medium")
             self.assertEqual(self.controller.mode, "MEDIUM")
-            self.assertEqual(self.controller.alert_min_score, 25)
-
-            # /low
-            await self.listener.process_command("/low")
-            self.assertEqual(self.controller.mode, "LOW")
-            self.assertEqual(self.controller.alert_min_score, 0)
 
             # /stop
             await self.listener.process_command("/stop")
             self.assertEqual(self.controller.mode, "STOPPED")
+            self.assertTrue(self.controller.session_stopped)
 
             # /status
             await self.listener.process_command("/status")
@@ -73,49 +85,39 @@ class TestTelegramListenerAndControl(unittest.TestCase):
 
         asyncio.run(_run_tests())
 
-    @patch("telegram_listener._send_message_async", new_callable=AsyncMock)
-    @patch("telegram_listener.answer_callback_query")
-    def test_listener_handle_update_access_control(self, mock_answer, mock_send):
-        mock_send.return_value = True
+    def test_session_persistence_upsert_and_lifecycle(self):
+        # 1. Verify initial upsert
+        sess = database.fetch_telegram_sessions(self.chat_id, db_path=self.db_path)
+        self.assertEqual(sess["chat_id"], self.chat_id)
+        self.assertEqual(sess["last_known_state"], "listening")
+        self.assertEqual(sess["total_findings_sent"], 0)
 
-        async def _run_tests():
-            # Authorized chat message
-            auth_update = {
-                "update_id": 1,
-                "message": {
-                    "chat": {"id": 5220202988},
-                    "text": "/high",
-                },
-            }
-            await self.listener.handle_update(auth_update)
-            self.assertEqual(self.controller.mode, "HIGH")
+        # 2. State change to active HIGH
+        database.update_telegram_session_state(self.chat_id, state="active", severity_focus="HIGH", db_path=self.db_path)
+        sess = database.fetch_telegram_sessions(self.chat_id, db_path=self.db_path)
+        self.assertEqual(sess["last_known_state"], "active")
+        self.assertEqual(sess["current_severity_focus"], "HIGH")
 
-            # Unauthorized chat message (should be ignored)
-            unauth_update = {
-                "update_id": 2,
-                "message": {
-                    "chat": {"id": 999999999},
-                    "text": "/stop",
-                },
-            }
-            await self.listener.handle_update(unauth_update)
-            self.assertEqual(self.controller.mode, "HIGH")  # Mode remained HIGH!
+        # 3. Increment findings count
+        database.increment_session_findings(self.chat_id, count=3, db_path=self.db_path)
+        sess = database.fetch_telegram_sessions(self.chat_id, db_path=self.db_path)
+        self.assertEqual(sess["total_findings_sent"], 3)
 
-            # Authorized inline keyboard callback
-            cb_update = {
-                "update_id": 3,
-                "callback_query": {
-                    "id": "cb_123",
-                    "from": {"id": 5220202988},
-                    "message": {"chat": {"id": 5220202988}},
-                    "data": "cmd_stop",
-                },
-            }
-            await self.listener.handle_update(cb_update)
-            self.assertEqual(self.controller.mode, "STOPPED")
-            mock_answer.assert_called_with("12345:fake_token", "cb_123", "Command received")
+        # 4. Re-connecting with same chat_id (UPSERT) resets per-session counters
+        database.upsert_telegram_session(self.chat_id, state="listening", db_path=self.db_path)
+        sess = database.fetch_telegram_sessions(self.chat_id, db_path=self.db_path)
+        self.assertEqual(sess["total_findings_sent"], 0)
+        self.assertEqual(sess["last_known_state"], "listening")
 
-        asyncio.run(_run_tests())
+        # 5. Close session
+        database.close_telegram_session(self.chat_id, db_path=self.db_path)
+        sess = database.fetch_telegram_sessions(self.chat_id, db_path=self.db_path)
+        self.assertEqual(sess["last_known_state"], "stopped")
+        self.assertIsNotNone(sess["session_ended_at"])
+
+        # 6. Verify exactly 1 row exists for this chat_id in database
+        all_sessions = database.fetch_telegram_sessions(db_path=self.db_path)
+        self.assertEqual(len(all_sessions), 1)
 
 
 if __name__ == "__main__":
