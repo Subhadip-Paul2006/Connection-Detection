@@ -75,5 +75,12 @@ def run_scan(use_baseline=True, repeat_keys=None, hash_processes=True,
         use_reputation=use_reputation, use_cert=use_cert, use_geoip=use_geoip,
         use_lineage=use_lineage, use_defender=use_defender, defender_matches=defender_matches,
     )
+
+    from analyzer import correlation
+    records, detected_chains = correlation.evaluate_chain(records, defender_events=confirmed_matches)
+    for c in detected_chains:
+        database.save_correlated_chain(c)
+    run_scan._last_chains = detected_chains
+
     records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
     return records
