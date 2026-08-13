@@ -36,6 +36,7 @@ def _build_help_message() -> str:
         "\U0001f7e2 `/low` \u2014 Alert on ALL findings \\(score \\>\\= 0\\)\n"
         "\u23f8 `/pause` \u2014 Stop scanning but keep this session connected\n"
         "\U0001f6d1 `/stop` \u2014 End this session completely \\(stops scan \\& disconnects\\)\n"
+        "\U0001f517 `/chains` \u2014 Show correlated attack chains\n"
         "\U0001f4ca `/status` \u2014 Show current session status, uptime \\& alert count\n"
         "\u2753 `/help` \u2014 Show this menu"
     )
@@ -105,6 +106,22 @@ class TelegramListener:
             )
             self.controller.stop_session()
             self.stop()
+
+        elif cmd in ("/chains", "cmd_chains"):
+            from database import database
+            chains = database.fetch_correlated_chains(limit=5)
+            if not chains:
+                await self.reply("\U0001f517 *Correlated Attack Chains*\n`No correlated attack chains detected in database.`")
+            else:
+                lines = ["\U0001f517 *Correlated Attack Chains*"]
+                for c in chains:
+                    stages_str = ", ".join(c.get("stages_involved", []))
+                    lines.append(
+                        f"\u2022 *Target:* `{_esc(c.get('target_identity', ''))}`\n"
+                        f"  *Stages:* `{_esc(stages_str)}` \\(Score: {_esc(str(c.get('final_risk_score')))} {_esc(str(c.get('final_risk_level')))}\\)\n"
+                        f"  _{_esc(c.get('chain_narrative', ''))}_"
+                    )
+                await self.reply("\n\n".join(lines))
 
         elif cmd in ("/status", "cmd_status"):
             status_text = self.controller.get_status_markdown()
