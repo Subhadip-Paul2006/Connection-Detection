@@ -25,7 +25,10 @@ from rich.table import Table
 
 from utils import logger
 from utils.config_loader import settings
-from utils.formatting import print_banner, render_connections_table, render_browser_activity_panel, render_persistence_table
+from utils.formatting import (
+    print_banner, render_connections_table, render_browser_activity_panel,
+    render_persistence_table, render_defender_panel, render_defender_events_table,
+)
 
 console = Console()
 log = logger.get_logger("main")
@@ -87,21 +90,20 @@ def cmd_scan(args):
     from analyzer import lineage_analyzer
 
     use_lineage = _lineage_enabled(args)
-    records = run_scan(use_baseline=not args.no_baseline, use_lineage=use_lineage, args=args)
+    use_defender = _defender_enabled(args)
+    records = run_scan(use_baseline=not args.no_baseline, use_lineage=use_lineage, use_defender=use_defender, args=args)
     console.print(
         "\\[Feluda] single scan — heuristic signals only, not malware verdicts.",
         style="dim",
     )
     console.print(_summary_line(records))
-    if use_lineage:
-        # persist a row per analyzed connection, then link lineage walk into
-        # process_lineage.connection_id so `--show-lineage <id>` can fetch
-        # the chain. Rows with zero lineage signals are still written (empty
-        # triggers list) so the timeline table below shows every pid checked,
-        # not just ones with active flags.
+
+    ids = None
+    if use_lineage or use_defender:
         ids = database.save_scan(records, return_ids=True)
-        with_lineage = [(i, r) for i, r in zip(ids, records)
-                        if r.get("lineage")]
+
+    if use_lineage and ids:
+        with_lineage = [(i, r) for i, r in zip(ids, records) if r.get("lineage")]
         for i, r in with_lineage:
             lineage_analyzer.save_lineage(
                 connection_id=i,
@@ -111,13 +113,39 @@ def cmd_scan(args):
             )
         console.print(f"[dim]lineage rows recorded: {len(with_lineage)} "
                       "(use 'history --show-lineage <id>' to drill in)[/dim]")
+
+    if use_defender:
+        def_data = getattr(run_scan, "_last_defender_data", {"confirmed": [], "gaps": []})
+        confirmed = def_data.get("confirmed", [])
+        gaps = def_data.get("gaps", [])
+        if confirmed or gaps:
+            if ids is None:
+                ids = database.save_scan(records, return_ids=True)
+            rec_id_map = {id(r): i for i, r in zip(ids, records)}
+            def_db_rows = []
+            for m in confirmed:
+                r_id = rec_id_map.get(id(m["record"]))
+                def_db_rows.append({
+                    **m["event"],
+                    "correlated_history_id": r_id,
+                    "match_confidence": m["match_confidence"],
+                })
+            for g in gaps:
+                def_db_rows.append({
+                    **g,
+                    "correlated_history_id": None,
+                    "match_confidence": "gap",
+                })
+            database.save_defender_events(def_db_rows)
+        console.print(render_defender_panel(confirmed, gaps))
+
     table = render_connections_table(
         records if args.all else [r for r in records if r.get("status") != "LISTEN" or r.get("risk_score", 0) > 0],
         title="Feluda — Network Connections",
         show_all=True,
     )
     console.print(table)
-    if use_lineage and with_lineage:
+    if use_lineage and ids and with_lineage:
         console.print("\n[bold cyan]Lineage findings[/bold cyan]")
         for i, r in with_lineage:
             chain = r.get("lineage", {}).get("chain", [])
@@ -136,6 +164,7 @@ def cmd_monitor(args):
         use_cert=_cert_enabled(args),
         use_geoip=_geoip_enabled(args),
         use_lineage=_lineage_enabled(args),
+        use_defender=_defender_enabled(args),
         persistence_check=getattr(args, "persistence_check", False),
         alert_telegram=getattr(args, "alert_telegram", False),
         test_alert=getattr(args, "test_alert", False),
@@ -188,6 +217,15 @@ def cmd_history(args):
             [{**r, "triggered_signals": json.loads(r.get("triggered_signals") or "[]")}
              for r in rows_p],
             title=f"Persistence snapshots (latest {len(rows_p)})"))
+        return 0
+
+    # --defender-only: show past defender event log correlations and gaps.
+    if getattr(args, "defender_only", False):
+        events = database.fetch_defender_events(limit=args.limit)
+        if not events:
+            console.print("[yellow]No Defender correlation records found in DB yet. Run 'python main.py scan --defender-check' in an elevated terminal.[/yellow]")
+            return 0
+        console.print(render_defender_events_table(events, title=f"Defender Events History (latest {len(events)})"))
         return 0
 
     rows = database.fetch_history(
@@ -506,6 +544,14 @@ def build_parser():
             "--no-lineage-check", action="store_true",
             help="skip process-tree lineage scoring (overrides --lineage-check)",
         )
+        parser.add_argument(
+            "--defender-check", action="store_true",
+            help="include Windows Defender event log correlation (opt-in; requires elevated/Admin terminal)",
+        )
+        parser.add_argument(
+            "--no-defender-check", action="store_true",
+            help="skip Windows Defender event log correlation (overrides --defender-check)",
+        )
 
     def _add_persistence_flags(parser):
         """Phase 6: persistence cross-reference + include-in-export flags."""
@@ -548,6 +594,8 @@ def build_parser():
                    help="show stored process lineage details for a past scan row (history.id)")
     h.add_argument("--persistence", action="store_true",
                    help="show past persistence snapshots instead of connection history")
+    h.add_argument("--defender-only", action="store_true",
+                   help="show stored Windows Defender event log correlation records instead of connection history")
     h.set_defaults(func=cmd_history)
 
     e = sub.add_parser("export", help="Export current scan to CSV/JSON/HTML")
@@ -610,6 +658,13 @@ def _lineage_enabled(args):
     if not getattr(args, "lineage_check", False):
         return False
     return not getattr(args, "no_lineage_check", False)
+
+
+def _defender_enabled(args):
+    """True when Stage 7 Defender event log correlation is enabled (`--defender-check`)."""
+    if not getattr(args, "defender_check", False):
+        return False
+    return not getattr(args, "no_defender_check", False)
 
 
 def main():
