@@ -34,7 +34,7 @@ def _key(rec):
 
 def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_baseline=True,
                use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False,
-               persistence_check=False, alert_telegram=False, test_alert=False):
+               use_defender=False, persistence_check=False, alert_telegram=False, test_alert=False):
     """Start the polling monitor loop. Ctrl+C exits cleanly.
 
     Parameters
@@ -59,6 +59,15 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
     tg_cfg = cfg.get("telegram", {})
     tg_threshold  = int(tg_cfg.get("alert_threshold", 50))
     tg_cooldown   = int(tg_cfg.get("cooldown_seconds", 1800))
+
+    # ------------------------------------------------------------------ Defender check elevation
+    defender_admin = False
+    if use_defender:
+        from analyzer import defender_correlator
+        defender_admin = defender_correlator.check_elevation()
+        if not defender_admin:
+            console.print("[yellow]--defender-check requires an elevated (Admin) terminal. Skipping Defender event correlation.[/yellow]")
+            use_defender = False
 
     # ------------------------------------------------------------------ Telegram setup
     alerter = None
@@ -109,11 +118,20 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
             store.observe_scan(records)
             repeat_keys = store.repeat_keys(min_repeat)
 
+            defender_matches = None
+            confirmed_matches = []
+            gap_events = []
+            if use_defender and defender_admin:
+                from analyzer import defender_correlator
+                def_events = defender_correlator.query_defender_events(lookback_minutes=max(15, (interval * 3) // 60 + 1))
+                confirmed_matches, gap_events = defender_correlator.correlate_events(records, def_events)
+                defender_matches = {id(m["record"]): m for m in confirmed_matches}
+
             baseline = database.load_baseline() if use_baseline else None
             records = rules.analyze(
                 records, baseline=baseline, repeat_keys=repeat_keys,
                 use_reputation=use_reputation, use_cert=use_cert, use_geoip=use_geoip,
-                use_lineage=use_lineage,
+                use_lineage=use_lineage, use_defender=use_defender, defender_matches=defender_matches,
             )
             records.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
 
@@ -127,6 +145,28 @@ def run_monitor(interval=None, alert_min=None, once=False, show_table=True, use_
                                                   lineage=r["lineage"],
                                                   fires={},
                                                   db_path=None)
+
+            if use_defender and defender_admin and (confirmed_matches or gap_events):
+                rec_id_map = {id(r): i for i, r in zip(ids, records)}
+                def_db_rows = []
+                for m in confirmed_matches:
+                    r_id = rec_id_map.get(id(m["record"]))
+                    evt = m["event"]
+                    def_db_rows.append({
+                        **evt,
+                        "correlated_history_id": r_id,
+                        "match_confidence": m["match_confidence"],
+                    })
+                for g in gap_events:
+                    def_db_rows.append({
+                        **g,
+                        "correlated_history_id": None,
+                        "match_confidence": "gap",
+                    })
+                database.save_defender_events(def_db_rows)
+
+                from utils.formatting import render_defender_panel
+                console.print(render_defender_panel(confirmed_matches, gap_events))
 
             new_records = [r for r in records if _key(r) not in previous]
             # Alert on (a) brand-new keys, and (b) existing keys whose score
