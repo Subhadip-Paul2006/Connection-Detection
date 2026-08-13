@@ -34,8 +34,9 @@ def _build_help_message() -> str:
         "\U0001f534 `/high` \u2014 Alert on HIGH \\& CRITICAL risk \\(score \\>\\= 50\\)\n"
         "\U0001f7e1 `/medium` \u2014 Alert on MEDIUM\\+ risk \\(score \\>\\= 25\\)\n"
         "\U0001f7e2 `/low` \u2014 Alert on ALL findings \\(score \\>\\= 0\\)\n"
-        "\U0001f6d1 `/stop` \u2014 Pause active scan loop \\(listener stays active\\)\n"
-        "\U0001f4ca `/status` \u2014 Show current scan mode, uptime \\& alert count\n"
+        "\u23f8 `/pause` \u2014 Stop scanning but keep this session connected\n"
+        "\U0001f6d1 `/stop` \u2014 End this session completely \\(stops scan \\& disconnects\\)\n"
+        "\U0001f4ca `/status` \u2014 Show current session status, uptime \\& alert count\n"
         "\u2753 `/help` \u2014 Show this menu"
     )
 
@@ -90,9 +91,20 @@ class TelegramListener:
             msg = self.controller.set_mode("LOW", min_score=0)
             await self.reply(f"\U0001f7e2 *Scan Mode set to LOW*\n`{_esc(msg)}`")
 
+        elif cmd in ("/pause", "cmd_pause"):
+            msg = self.controller.pause_scan()
+            await self.reply(
+                f"\u23f8 *Scanning Paused*\n"
+                f"`{_esc(msg)}` Send /high, /medium, or /low to resume, or /stop to end session completely\\."
+            )
+
         elif cmd in ("/stop", "cmd_stop"):
-            msg = self.controller.stop_scan()
-            await self.reply(f"\U0001f6d1 *Scan Paused*\n`{_esc(msg)}`")
+            await self.reply(
+                "\U0001f6d1 *Session Ended*\n"
+                "`Feluda Telegram Remote Control session has ended. Run 'monitor --telegram-control' again to reconnect.`"
+            )
+            self.controller.stop_session()
+            self.stop()
 
         elif cmd in ("/status", "cmd_status"):
             status_text = self.controller.get_status_markdown()
