@@ -370,8 +370,9 @@ def register_bot_commands(token: str) -> bool:
             {"command": "high", "description": "Start scan — alert on HIGH & CRITICAL risk (score >= 50)"},
             {"command": "medium", "description": "Start scan — alert on MEDIUM+ risk (score >= 25)"},
             {"command": "low", "description": "Start scan — alert on ALL findings (score >= 0)"},
-            {"command": "stop", "description": "Pause scan loop (listener remains active)"},
-            {"command": "status", "description": "Show current mode, uptime, and alert count"},
+            {"command": "pause", "description": "Pause active scan loop (listener remains connected)"},
+            {"command": "stop", "description": "End session completely (stops scan & disconnects)"},
+            {"command": "status", "description": "Show session status, uptime & finding counts"},
             {"command": "help", "description": "Show command menu & control buttons"},
         ]
         resp = httpx.post(url, json={"commands": commands}, timeout=10.0)
@@ -395,10 +396,13 @@ def build_inline_keyboard() -> dict:
             ],
             [
                 {"text": "🟢 All Low+ (>=0)", "callback_data": "cmd_low"},
-                {"text": "🛑 Stop Scan", "callback_data": "cmd_stop"},
+                {"text": "⏸ Pause", "callback_data": "cmd_pause"},
             ],
             [
                 {"text": "📊 Status", "callback_data": "cmd_status"},
+                {"text": "🛑 End Session", "callback_data": "cmd_stop"},
+            ],
+            [
                 {"text": "❓ Help", "callback_data": "cmd_help"},
             ],
         ]
