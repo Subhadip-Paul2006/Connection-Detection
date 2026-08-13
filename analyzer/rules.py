@@ -33,6 +33,7 @@ RULE_ORDER = [
     "multiple_external_connections",
     "repeated_connection",
     "outside_baseline",
+    "defender_correlated_detection",
 ]
 
 log = logger.get_logger("analyzer.rules")
@@ -44,7 +45,8 @@ def _add(record, rule_key, weight, reason):
 
 
 def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
-            use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False):
+            use_reputation=False, use_cert=False, use_geoip=False, use_lineage=False,
+            use_defender=False, defender_matches=None):
     """Run all rules over enriched, annotated records.
 
     Args:
@@ -230,6 +232,19 @@ def analyze(records, baseline=None, repeat_keys=None, hash_processes=True,
                 # don't re-append lineage signals into reasons — analyze() did
                 # this already (LINEAGE-prefixed marking); avoid duplicates
                 rec["lineage_score_added"] = True                # audit edge
+
+        # 11. Windows Defender event correlation (opt-in via --defender-check)
+        if use_defender and defender_matches:
+            match_info = defender_matches.get(id(rec))
+            if match_info:
+                evt = match_info.get("event", {})
+                threat = evt.get("threat_name") or "threat"
+                conf = match_info.get("match_confidence", "unknown")
+                w = weights.get("defender_correlated_detection", 50)
+                _add(
+                    rec, "defender_correlated_detection", w,
+                    f"Windows Defender detection event correlated: '{threat}' (confidence: {conf})",
+                )
 
         apply_score(rec)
 
