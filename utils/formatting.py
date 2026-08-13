@@ -167,6 +167,62 @@ def render_alert_panel(rec):
     )
 
 
+def render_chain_panel(chain):
+    """Build a rich Panel for one correlated attack chain finding."""
+    from rich.markup import escape as _esc
+    from rich.panel import Panel
+    from rich.text import Text
+
+    score = chain.get("final_risk_score", 50)
+    level = chain.get("final_risk_level", "HIGH")
+    color = risk_color(level)
+    target = chain.get("target_identity", "unknown")
+    stages = ", ".join(chain.get("stages_involved", []))
+    narrative = chain.get("chain_narrative", "")
+    bonus = chain.get("bonus_points", 0)
+
+    lines = [
+        f"[bold]Target Identity:[/bold]  {_esc(target)}",
+        f"[bold]Stages Involved:[/bold]  {_esc(stages)}  (+{bonus} correlation bonus)",
+        f"[bold]Risk Score:[/bold]       [{color}]{score} ({level})[/{color}]",
+        f"\n[bold green]🔗 Headline Narrative:[/bold green]\n{_esc(narrative)}",
+    ]
+    body = Text.from_markup("\n".join(lines))
+    return Panel(
+        body,
+        title=f"[{color}]🔗 CORRELATED ATTACK CHAIN — {level}[/{color}]",
+        border_style=color,
+        expand=True,
+    )
+
+
+def render_chains_table(chains, title="Correlated Attack Chains"):
+    """Render a table of stored attack chains."""
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(title=title, expand=True)
+    table.add_column("Target Identity", overflow="fold")
+    table.add_column("Stages Involved", no_wrap=True)
+    table.add_column("Score", justify="right", no_wrap=True)
+    table.add_column("Level", no_wrap=True)
+    table.add_column("Headline Narrative", overflow="fold")
+    table.add_column("Detected At", no_wrap=True)
+
+    for c in chains:
+        level = c.get("final_risk_level", "HIGH")
+        color = risk_color(level)
+        table.add_row(
+            Text(str(c.get("target_identity", ""))),
+            Text(", ".join(c.get("stages_involved", []))),
+            f"[{color}]{c.get('final_risk_score', 0)}[/{color}]",
+            f"[{color}]{level}[/{color}]",
+            Text(str(c.get("chain_narrative", ""))),
+            Text(str(c.get("detected_at", ""))),
+        )
+    return table
+
+
 def render_persistence_table(entries, errors=None, title="Persistence / Autorun Entries"):
     """Render persistence scan results. Rows colored green=0, yellow 1-39, red >=40.
     `errors` are permission/absence notes rendered at the bottom as dim lines —
