@@ -31,9 +31,9 @@ def _build_help_message() -> str:
     return (
         "\U0001f916 *Feluda Remote Control Menu*\n\n"
         "Use the buttons below or send a command to control the active monitor scan:\n\n"
-        "\U0001f534 `/high` \u2014 Alert on HIGH \\& CRITICAL risk \\(score \\>= 50\\)\n"
-        "\U0001f7e1 `/medium` \u2014 Alert on MEDIUM\\+ risk \\(score \\>= 25\\)\n"
-        "\U0001f7e2 `/low` \u2014 Alert on ALL findings \\(score \\>= 0\\)\n"
+        "\U0001f534 `/high` \u2014 Alert on HIGH \\& CRITICAL risk \\(score \\>\\= 50\\)\n"
+        "\U0001f7e1 `/medium` \u2014 Alert on MEDIUM\\+ risk \\(score \\>\\= 25\\)\n"
+        "\U0001f7e2 `/low` \u2014 Alert on ALL findings \\(score \\>\\= 0\\)\n"
         "\U0001f6d1 `/stop` \u2014 Pause active scan loop \\(listener stays active\\)\n"
         "\U0001f4ca `/status` \u2014 Show current scan mode, uptime \\& alert count\n"
         "\u2753 `/help` \u2014 Show this menu"

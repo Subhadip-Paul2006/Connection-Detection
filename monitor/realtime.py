@@ -70,7 +70,7 @@ class MonitorController:
 
         lines = [
             "\U0001f4ca *Feluda Monitor Status*",
-            f"*Active Mode:* `{_esc(self.mode)}` \\(score \\>= {_esc(str(self.alert_min_score))}\\)",
+            f"*Active Mode:* `{_esc(self.mode)}` \\(score \\>\\= {_esc(str(self.alert_min_score))}\\)",
             f"*Mode Uptime:* `{_esc(uptime_str)}`",
             f"*Scans Conducted:* `{_esc(str(self.scans_count))}`",
             f"*Alerts Triggered:* `{_esc(str(self.alerts_count))}`",
