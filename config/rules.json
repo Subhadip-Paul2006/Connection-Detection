@@ -94,7 +94,10 @@
     "multiple_external_connections": 10,
     "repeated_connection": 10,
     "outside_baseline": 15,
-    "defender_correlated_detection": 50
+    "defender_correlated_detection": 50,
+    "chain_correlation_bonus_2": 25,
+    "chain_correlation_bonus_3": 40,
+    "chain_correlation_bonus_4": 60
   },
 
   "thresholds": {
