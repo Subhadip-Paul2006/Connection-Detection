@@ -139,6 +139,12 @@ def cmd_scan(args):
             database.save_defender_events(def_db_rows)
         console.print(render_defender_panel(confirmed, gaps))
 
+    chains = getattr(run_scan, "_last_chains", [])
+    if chains:
+        from utils.formatting import render_chain_panel
+        for c in chains:
+            console.print(render_chain_panel(c))
+
     table = render_connections_table(
         records if args.all else [r for r in records if r.get("status") != "LISTEN" or r.get("risk_score", 0) > 0],
         title="Feluda — Network Connections",
@@ -228,6 +234,16 @@ def cmd_history(args):
             console.print("[yellow]No Defender correlation records found in DB yet. Run 'python main.py scan --defender-check' in an elevated terminal.[/yellow]")
             return 0
         console.print(render_defender_events_table(events, title=f"Defender Events History (latest {len(events)})"))
+        return 0
+
+    # --chains-only: show stored correlated attack chains.
+    if getattr(args, "chains_only", False):
+        chains = database.fetch_correlated_chains(limit=args.limit)
+        if not chains:
+            console.print("[yellow]No correlated attack chains stored in DB yet.[/yellow]")
+            return 0
+        from utils.formatting import render_chains_table
+        console.print(render_chains_table(chains, title=f"Correlated Attack Chains (latest {len(chains)})"))
         return 0
 
     # --telegram-sessions: show stored Telegram remote control sessions.
@@ -624,6 +640,8 @@ def build_parser():
                    help="show past persistence snapshots instead of connection history")
     h.add_argument("--defender-only", action="store_true",
                    help="show stored Windows Defender event log correlation records instead of connection history")
+    h.add_argument("--chains-only", action="store_true",
+                   help="show stored correlated attack chains instead of connection history")
     h.add_argument("--telegram-sessions", action="store_true",
                    help="show stored Telegram remote control sessions instead of connection history")
     h.set_defaults(func=cmd_history)
